@@ -22,13 +22,17 @@ struct Frame {
   pillCount:          f32,
   applySrgbOetf:      f32,  // 1.0 if canvas is non-sRGB and we must encode; 0.0 if -srgb
   shape:              f32,  // 0 = pill (stadium), 1 = prism, 2 = cube (rotates)
-  time:               f32,  // seconds since start (used for cube rotation)
+  time:               f32,  // seconds since start (used for jitter hash seed)
   historyBlend:       f32,  // 0.2 steady state, 1.0 when the scene changed this frame
   heroLambda:         f32,  // jittered each frame in [380,700]; Hero mode uses this
   cameraZ:            f32,  // distance from screen plane (z=0) to camera, in pixels
   projection:         f32,  // 0 = orthographic, 1 = perspective
   debugProxy:         f32,  // 1 = tint every proxy fragment pink (debug view)
   _pad0:              f32,
+  // Cube rotation (rz·rx composed on the host from `time`). Uploaded as a
+  // uniform so every SDF evaluation just does one mat-vec instead of computing
+  // four cos/sin on the GPU — ~118 SDF calls per pixel in the worst case.
+  cubeRot:            mat3x3<f32>,
   pills:              array<PillGpu, MAX_PILLS>,
 };
 
@@ -70,27 +74,6 @@ fn sdfCube(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> f32 {
   return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - edgeR;
 }
 
-// Compose rotations around X and Z. Slow tumble — cube faces tip in and out
-// of the viewing direction, which modulates refraction angles per frame.
-fn cubeRotation(t: f32) -> mat3x3<f32> {
-  let ax = t * 0.31;
-  let az = t * 0.20;
-  let cx = cos(ax); let sx = sin(ax);
-  let cz = cos(az); let sz = sin(az);
-  // WGSL mat3x3 literals fill columns. Each row of literals below is one column.
-  let rx = mat3x3<f32>(
-    1.0, 0.0, 0.0,
-    0.0,  cx,  sx,
-    0.0, -sx,  cx,
-  );
-  let rz = mat3x3<f32>(
-     cz,  sz, 0.0,
-    -sz,  cz, 0.0,
-    0.0, 0.0, 1.0,
-  );
-  return rz * rx;
-}
-
 // Isosceles triangle in YZ (apex +Z, base -Z), extruded along X. Half-sizes
 // match sdfPill: halfSize.x is extrusion length, halfSize.y the triangle base
 // half-width, halfSize.z the apex height.
@@ -118,10 +101,10 @@ fn sceneSdf(p: vec3<f32>) -> f32 {
     let local = p - pill.center;
     var pd: f32;
     if (shapeId == 2) {
-      // Cube is rotated in local space before SDF evaluation. `frame.time` is
-      // constant per fragment so the rotation matrix is consistent across all
-      // sceneSdf calls within one pixel (sphere trace + normal finite diffs).
-      pd = sdfCube(cubeRotation(frame.time) * local, pill.halfSize, pill.edgeR);
+      // Cube is rotated in local space before SDF evaluation. Rotation is a
+      // uniform (computed once on the host per frame), so every SDF call here
+      // is just one mat-vec — the heavy cos/sin used to run per call.
+      pd = sdfCube(frame.cubeRot * local, pill.halfSize, pill.edgeR);
     } else if (shapeId == 1) {
       pd = sdfPrism(local, pill.halfSize, pill.edgeR);
     } else {
@@ -185,6 +168,102 @@ fn insideTrace(ro: vec3<f32>, rd: vec3<f32>, maxT: f32) -> vec3<f32> {
     if (t > maxT) { break; }
   }
   return p;
+}
+
+// Which pill's center is closest to a world-space point? Used once per
+// fragment after the front hit to pick the pill whose analytical back-face
+// intersection we'll evaluate in the wavelength loop. Linear scan, capped at
+// MAX_PILLS=8 so it's cheap.
+fn nearestCubePillIdx(p: vec3<f32>) -> u32 {
+  let count = min(u32(frame.pillCount), MAX_PILLS);
+  var best:  u32 = 0u;
+  var bestD: f32 = 1e9;
+  for (var i: u32 = 0u; i < count; i = i + 1u) {
+    let d = length(p - frame.pills[i].center);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+// Analytical back-face intersection for a rotated rounded cube. Given a ray
+// starting inside the cube (typically the refracted direction at the front
+// hit), returns (pExit_world, nBack_world) where nBack faces INTO the glass —
+// matching the `-sceneNormal(pExit)` convention the caller passes to
+// `refract()`. Replaces a 48-iter sphere-trace + 6-iter finite-diff normal
+// with ~30 ALU ops, and it's invoked once per wavelength so the savings
+// multiply by N.
+//
+// Uses ray-box slab intersection in the cube's local (rotated) frame:
+//   `pExit_local = roL + rdL * tExit`, where tExit is the smallest t at which
+//   the ray leaves one of the three axis-aligned slabs [-halfSize, +halfSize].
+// The outward normal is the rounded-box gradient at `pExit_local`
+//   `normalize(pExit_local - clamp(pExit_local, -(h-edgeR), +(h-edgeR)))`
+// which smoothly blends face→rim→corner exactly like the finite-diff normal
+// did, so the rounded rim keeps its soft refraction.
+//
+// Caveat: for rays exiting through a rounded rim, intersecting the outer slab
+// slightly overshoots the true rounded surface (by ≤ edgeR). At edgeR=10 on a
+// 160-wide cube this is <6% of the rim band and invisible in the final image
+// after temporal accumulation.
+struct CubeExit {
+  pWorld: vec3<f32>,
+  nBack:  vec3<f32>,  // inward-facing (into the glass), same sign convention as -sceneNormal
+};
+
+fn cubeAnalyticExit(roWorld: vec3<f32>, rdWorld: vec3<f32>, pillIdx: u32) -> CubeExit {
+  let pill = frame.pills[pillIdx];
+  let h    = pill.halfSize;
+
+  // World → local (axis-aligned cube at origin). The rotation is orthonormal,
+  // so rdL is already unit-length if rdWorld was.
+  let roL = frame.cubeRot * (roWorld - pill.center);
+  let rdL = frame.cubeRot * rdWorld;
+
+  // Slab intersection per axis. A zero component in rdL gives ±inf which the
+  // `max` naturally rejects (ro is inside the cube, so that axis' slab already
+  // contains us and can't be the first exit).
+  let rdInv = vec3<f32>(1.0) / rdL;
+  let tHi   = (h - roL) * rdInv;
+  let tLo   = (-h - roL) * rdInv;
+  let tExitAxis = max(tHi, tLo);
+
+  // First slab crossing on the way out wins.
+  var tExit: f32;
+  var faceAxisN: vec3<f32>;
+  if (tExitAxis.x <= tExitAxis.y && tExitAxis.x <= tExitAxis.z) {
+    tExit = tExitAxis.x;
+    faceAxisN = vec3<f32>(sign(rdL.x), 0.0, 0.0);
+  } else if (tExitAxis.y <= tExitAxis.z) {
+    tExit = tExitAxis.y;
+    faceAxisN = vec3<f32>(0.0, sign(rdL.y), 0.0);
+  } else {
+    tExit = tExitAxis.z;
+    faceAxisN = vec3<f32>(0.0, 0.0, sign(rdL.z));
+  }
+
+  let pL = roL + rdL * tExit;
+
+  // Rounded-box gradient: normal blends from axis-aligned in the flat face
+  // region to radial in the rim/corner region, matching the finite-diff
+  // normal the sphere-trace path would compute.
+  let inner     = h - vec3<f32>(pill.edgeR);
+  let q         = clamp(pL, -inner, inner);
+  let roundedN  = pL - q;
+  let roundedL2 = dot(roundedN, roundedN);
+  var nOutL: vec3<f32>;
+  if (roundedL2 > 1e-8) {
+    nOutL = roundedN * inverseSqrt(roundedL2);
+  } else {
+    // Degenerate: exit exactly on the inner-core AABB (impossible once
+    // edgeR>0 unless numerical slop). Fall back to the slab face normal.
+    nOutL = faceAxisN;
+  }
+
+  // Local → world. rotation is orthonormal, so transpose == inverse.
+  let rotT    = transpose(frame.cubeRot);
+  let pWorld  = rotT * pL     + pill.center;
+  let nOut    = rotT * nOutL;
+  return CubeExit(pWorld, -nOut);
 }
 
 // ---------- spectral math ----------
@@ -336,8 +415,7 @@ fn vs_proxy(
     // The shader defines the cube via `local = rot * (p - center)`, so a
     // world-space proxy corner that maps to the unit-cube local-space corner
     // `c` is `center + transpose(rot) * (c * extent)`.
-    let rot = cubeRotation(frame.time);
-    corner  = transpose(rot) * corner;
+    corner = transpose(frame.cubeRot) * corner;
   }
   return projectWorld(pill.center + corner);
 }
@@ -415,10 +493,16 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   let strength = frame.refractionStrength;
   let jitter   = frame.jitter;
   let useHero  = frame.refractionMode > 0.5;
+  let isCube   = i32(frame.shape + 0.5) == 2;
 
   // Cap the inside-trace at the longest possible chord through the largest
   // pill in the scene. Thick configurations would otherwise bail out mid-body.
   let internalMax = maxInternalPath();
+
+  // Pill the front hit belongs to. Only used for the analytical cube path —
+  // pill/prism keep sphere-tracing the whole scene, which works even when two
+  // pills overlap.
+  let cubeIdx = nearestCubePillIdx(h.p);
 
   // Hero mode: one back-face trace at a PER-FRAME-RANDOMIZED wavelength
   // (Wilkie 2014). Unlike plain "approx" fixed at 540 nm, the randomization +
@@ -429,8 +513,14 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   if (useHero) {
     let iorHero = cauchyIor(frame.heroLambda, n_d, V_d);
     let r1hero  = refract(rd, nFront, 1.0 / iorHero);
-    sharedExit  = insideTrace(h.p, r1hero, internalMax);
-    sharedNBack = -sceneNormal(sharedExit);
+    if (isCube) {
+      let ex = cubeAnalyticExit(h.p, r1hero, cubeIdx);
+      sharedExit  = ex.pWorld;
+      sharedNBack = ex.nBack;
+    } else {
+      sharedExit  = insideTrace(h.p, r1hero, internalMax);
+      sharedNBack = -sceneNormal(sharedExit);
+    }
   }
 
   // External front-face reflection — used BOTH as TIR fallback and as the
@@ -476,8 +566,14 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     var pExit = sharedExit;
     var nBack = sharedNBack;
     if (!useHero) {
-      pExit = insideTrace(h.p, r1, internalMax);
-      nBack = -sceneNormal(pExit);
+      if (isCube) {
+        let ex = cubeAnalyticExit(h.p, r1, cubeIdx);
+        pExit = ex.pWorld;
+        nBack = ex.nBack;
+      } else {
+        pExit = insideTrace(h.p, r1, internalMax);
+        nBack = -sceneNormal(pExit);
+      }
     }
     let r2 = refract(r1, nBack, ior);
 

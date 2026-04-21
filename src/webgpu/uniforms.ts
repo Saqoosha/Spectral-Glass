@@ -1,4 +1,5 @@
 import type { Pill } from '../pills';
+import { cubeRotationColumns } from '../math/cube';
 
 export const MAX_PILLS = 8;
 
@@ -23,18 +24,20 @@ export type FrameParams = {
 };
 
 // Byte layout mirrors the WGSL `Frame` struct exactly (std140-ish rules):
-//   offset  0: resolution.xy,  photoSize.xy                      (16 B)
-//   offset 16: n_d, V_d, sampleCount, refractionStrength         (16 B)
-//   offset 32: jitter, refractionMode, pillCount, applySrgbOetf  (16 B)
-//   offset 48: shape, time, historyBlend, heroLambda             (16 B)
-//   offset 64: cameraZ, projection, debugProxy, _pad             (16 B)
-//   offset 80: pills[0..MAX_PILLS] — each pill is vec3 + f32 + vec3 + f32 (32 B)
-const HEAD_FLOATS = 20;                                // 80 B
-const PILL_FLOATS = 8;                                 // 32 B per pill
-const TOTAL_FLOATS = HEAD_FLOATS + PILL_FLOATS * MAX_PILLS;
-const TOTAL_BYTES  = TOTAL_FLOATS * 4;
+//   offset   0: resolution.xy,  photoSize.xy                      (16 B)
+//   offset  16: n_d, V_d, sampleCount, refractionStrength         (16 B)
+//   offset  32: jitter, refractionMode, pillCount, applySrgbOetf  (16 B)
+//   offset  48: shape, time, historyBlend, heroLambda             (16 B)
+//   offset  64: cameraZ, projection, debugProxy, _pad0            (16 B)
+//   offset  80: cubeRot mat3x3<f32> (3 vec3 columns, 16 B each)   (48 B)
+//   offset 128: pills[0..MAX_PILLS] — each pill is vec3 + f32 + vec3 + f32 (32 B)
+const HEAD_FLOATS     = 20;                                         // 80 B
+const CUBE_ROT_FLOATS = 12;                                         // 48 B (3 padded cols)
+const PILL_FLOATS     = 8;                                          // 32 B per pill
+const TOTAL_FLOATS    = HEAD_FLOATS + CUBE_ROT_FLOATS + PILL_FLOATS * MAX_PILLS;
+const TOTAL_BYTES     = TOTAL_FLOATS * 4;
 
-// Reused across frames so we don't allocate a 336-byte Float32Array every tick.
+// Reused across frames so we don't allocate a 384-byte Float32Array every tick.
 const scratch = new Float32Array(TOTAL_FLOATS);
 
 export function createFrameBuffer(device: GPUDevice): GPUBuffer {
@@ -70,12 +73,18 @@ export function writeFrame(device: GPUDevice, buf: GPUBuffer, p: FrameParams): v
   scratch[16] = p.cameraZ;
   scratch[17] = p.projection;
   scratch[18] = p.debugProxy ? 1 : 0;
-  // [19] padding (zeroed by scratch.fill above)
+  // [19] _pad0 (zeroed by scratch.fill above)
 
+  // Cube rotation: mat3x3<f32>. `cubeRotationColumns` returns 12 floats in the
+  // exact WGSL layout (3 columns × 16 B, last float of each column is padding)
+  // so we can just `set()` it wholesale at float index HEAD_FLOATS.
+  scratch.set(cubeRotationColumns(p.time), HEAD_FLOATS);
+
+  const pillBase = HEAD_FLOATS + CUBE_ROT_FLOATS;  // float index 32
   const pillCount = Math.min(p.pills.length, MAX_PILLS);
   for (let i = 0; i < pillCount; i++) {
     const pill = p.pills[i]!;
-    const base = HEAD_FLOATS + i * PILL_FLOATS;
+    const base = pillBase + i * PILL_FLOATS;
     scratch[base + 0] = pill.cx;
     scratch[base + 1] = pill.cy;
     scratch[base + 2] = pill.cz;
