@@ -2,6 +2,7 @@ import { Pane } from 'tweakpane';
 
 export type Params = {
   sampleCount: 3 | 8 | 16 | 32;
+  shape: 'pill' | 'prism' | 'cube';
   n_d: number;
   V_d: number;
   pillLen: number;
@@ -13,30 +14,157 @@ export type Params = {
   temporalJitter: boolean;
 };
 
-export function initUi(params: Params, reloadPhoto: () => void): Pane {
+type Preset = {
+  label: string;
+  apply: (p: Params) => void;
+};
+
+type Material = {
+  label: string;
+  n_d:   number;
+  V_d:   number;
+};
+
+// Real-world reference values. Sources: Schott glass catalog, Wikipedia
+// optical property tables. Diamond's "fire" comes from the high n_d multiplying
+// (n_d - 1)/V_d in the Cauchy formula — moderate V_d, strong visual dispersion.
+const MATERIALS: readonly Material[] = [
+  { label: 'Water',           n_d: 1.333, V_d: 55.7 },
+  { label: 'Fused silica',    n_d: 1.458, V_d: 67.7 },
+  { label: 'PMMA (acrylic)',  n_d: 1.491, V_d: 58.0 },
+  { label: 'Crown (BK7)',     n_d: 1.517, V_d: 64.2 },
+  { label: 'Polycarbonate',   n_d: 1.586, V_d: 30.0 },
+  { label: 'Lead crystal',    n_d: 1.600, V_d: 32.0 },
+  { label: 'Flint (SF10)',    n_d: 1.728, V_d: 28.4 },
+  { label: 'Dense flint (SF11)', n_d: 1.785, V_d: 25.4 },
+  { label: 'Cubic zirconia',  n_d: 2.150, V_d: 30.0 },
+  { label: 'Diamond',         n_d: 2.418, V_d: 55.0 },
+  { label: 'Moissanite',      n_d: 2.648, V_d: 31.0 },
+  // Fantasy — not real, but fun.
+  { label: '✨ Rainbow glass', n_d: 1.55,  V_d: 8.0  },
+  { label: '✨ Fire crystal',  n_d: 2.2,   V_d: 12.0 },
+  { label: '✨ Unobtanium',    n_d: 3.2,   V_d: 4.0  },
+];
+
+const PRESETS: readonly Preset[] = [
+  {
+    label: 'Subtle pill',
+    apply: (p) => {
+      p.shape              = 'pill';
+      p.sampleCount        = 8;
+      p.n_d                = 1.5168;
+      p.V_d                = 40;
+      p.pillLen            = 320;
+      p.pillShort          = 88;
+      p.pillThick          = 40;
+      p.edgeR              = 14;
+      p.refractionStrength = 0.1;
+      p.refractionMode     = 'exact';
+    },
+  },
+  {
+    label: 'Strong dispersion',
+    apply: (p) => {
+      p.shape              = 'pill';
+      p.sampleCount        = 16;
+      p.n_d                = 1.6;
+      p.V_d                = 18;
+      p.pillLen            = 320;
+      p.pillShort          = 88;
+      p.pillThick          = 40;
+      p.edgeR              = 14;
+      p.refractionStrength = 0.35;
+      p.refractionMode     = 'exact';
+    },
+  },
+  {
+    label: 'Prism rainbow',
+    apply: (p) => {
+      p.shape              = 'prism';
+      p.sampleCount        = 16;
+      p.n_d                = 1.6;
+      p.V_d                = 12;
+      p.pillLen            = 400;
+      p.pillShort          = 80;
+      p.pillThick          = 80;
+      p.edgeR              = 4;
+      p.refractionStrength = 0.18;
+      p.refractionMode     = 'exact';
+    },
+  },
+  {
+    label: 'Rotating cube',
+    apply: (p) => {
+      p.shape              = 'cube';
+      p.sampleCount        = 16;
+      p.n_d                = 1.55;
+      p.V_d                = 18;
+      p.pillLen            = 160;
+      p.pillShort          = 160;
+      p.pillThick          = 160;
+      p.edgeR              = 10;
+      p.refractionStrength = 0.2;
+      p.refractionMode     = 'exact';
+    },
+  },
+];
+
+export function initUi(
+  params: Params,
+  reloadPhoto: () => void,
+  onChange: () => void,
+): Pane {
   const pane = new Pane({ title: 'Spectral Dispersion', expanded: true });
 
   const spectral = pane.addFolder({ title: 'Spectral' });
   spectral.addBinding(params, 'sampleCount', {
-    options: { '3 (fake RGB)': 3, '8 (default)': 8, '16': 16, '32': 32 },
+    options: { '3 (fake RGB)': 3, '8': 8, '16 (default)': 16, '32': 32 },
   });
-  spectral.addBinding(params, 'n_d', { min: 1.0, max: 2.4, step: 0.001, label: 'IOR n_d' });
-  spectral.addBinding(params, 'V_d', { min: 15,  max: 90,  step: 0.5,   label: 'Abbe V_d' });
+  spectral.addBinding(params, 'n_d', { min: 1.0, max: 3.5, step: 0.001, label: 'IOR n_d' });
+  spectral.addBinding(params, 'V_d', { min: 1,   max: 90,  step: 0.5,   label: 'Abbe V_d' });
   spectral.addBinding(params, 'refractionMode', {
     options: { Exact: 'exact', Approx: 'approx' },
   });
   spectral.addBinding(params, 'temporalJitter', { label: 'Temporal jitter' });
 
-  const shape = pane.addFolder({ title: 'Pill shape' });
-  shape.addBinding(params, 'pillLen',   { min: 80,  max: 800, step: 1, label: 'Length' });
-  shape.addBinding(params, 'pillShort', { min: 20,  max: 200, step: 1, label: 'Short axis' });
-  shape.addBinding(params, 'pillThick', { min: 10,  max: 200, step: 1, label: 'Thickness' });
+  const shape = pane.addFolder({ title: 'Shape' });
+  shape.addBinding(params, 'shape', {
+    options: { Pill: 'pill', 'Prism (rainbow)': 'prism', 'Cube (rotating)': 'cube' },
+  });
+  shape.addBinding(params, 'pillLen',   { min: 80,  max: 800, step: 1,   label: 'Length (X)' });
+  shape.addBinding(params, 'pillShort', { min: 20,  max: 200, step: 1,   label: 'Short (Y)'  });
+  shape.addBinding(params, 'pillThick', { min: 10,  max: 200, step: 1,   label: 'Thick (Z)'  });
   shape.addBinding(params, 'edgeR',     { min: 1,   max: 100, step: 0.5, label: 'Edge radius' });
 
   const misc = pane.addFolder({ title: 'Misc' });
-  misc.addBinding(params, 'refractionStrength', { min: 0, max: 0.5, step: 0.001, label: 'Refraction' });
-  const reload = misc.addButton({ title: 'Reload photo' });
+  misc.addBinding(params, 'refractionStrength', { min: 0, max: 1.0, step: 0.001, label: 'Refraction' });
+
+  const presets = pane.addFolder({ title: 'Presets' });
+  for (const preset of PRESETS) {
+    const btn = presets.addButton({ title: preset.label });
+    btn.on('click', () => {
+      preset.apply(params);
+      pane.refresh();
+      onChange();
+    });
+  }
+  const reload = presets.addButton({ title: 'Reload photo' });
   reload.on('click', reloadPhoto);
+
+  // Materials only change n_d + V_d — leaves shape/size/refraction strength
+  // alone so you can compare glass types on the same geometry.
+  const materials = pane.addFolder({ title: 'Materials', expanded: false });
+  for (const m of MATERIALS) {
+    const btn = materials.addButton({ title: `${m.label}  (n=${m.n_d}, V=${m.V_d})` });
+    btn.on('click', () => {
+      params.n_d = m.n_d;
+      params.V_d = m.V_d;
+      pane.refresh();
+      onChange();
+    });
+  }
+
+  pane.on('change', () => onChange());
 
   return pane;
 }
@@ -44,14 +172,19 @@ export function initUi(params: Params, reloadPhoto: () => void): Pane {
 export function defaultParams(): Params {
   return {
     sampleCount: 8,
+    shape: 'pill',
     n_d: 1.5168,
-    V_d: 40,
+    V_d: 25,
     pillLen: 320,
     pillShort: 88,
     pillThick: 40,
     edgeR: 14,
-    refractionStrength: 0.1,
+    refractionStrength: 0.15,
     refractionMode: 'exact',
     temporalJitter: true,
   };
+}
+
+export function mergeParams(base: Params, patch: Partial<Params>): Params {
+  return { ...base, ...patch };
 }

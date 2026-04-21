@@ -1,3 +1,8 @@
+// Minimal ambient shim for `@tweakpane/core`. Tweakpane v4.x re-exports types
+// from `@tweakpane/core`, but that package isn't a direct dependency and isn't
+// installed — TypeScript resolution then fails inside the bundled d.ts files.
+// Delete this file once upstream ships bundled types or we add @tweakpane/core
+// as a devDependency. Runtime JS is unaffected; only the TS types need the stub.
 declare module '@tweakpane/core' {
   export interface Semver { major: number; minor: number; patch: number; }
   export interface BaseParams { disabled?: boolean; hidden?: boolean; }
@@ -48,5 +53,8 @@ declare module '@tweakpane/core' {
     addFolder(params: FolderParams): FolderApi;
     addBlade(params: BaseBladeParams): BladeApi;
     addTab(params: TabParams): TabApi;
+    refresh(): void;
+    on(eventName: 'change', handler: (ev: { last: boolean }) => void): this;
+    on(eventName: 'fold',   handler: (ev: { expanded: boolean }) => void): this;
   }
 }

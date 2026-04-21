@@ -3,66 +3,74 @@ import type { Pill } from '../pills';
 export const MAX_PILLS = 8;
 
 export type FrameParams = {
-  resolution:         [number, number];
-  photoSize:          [number, number];
-  n_d:                number;
-  V_d:                number;
-  sampleCount:        number;
-  refractionStrength: number;
-  jitter:             number;
-  refractionMode:     number;
-  pillCount:          number;
-  pills:              Pill[];
+  readonly resolution:         readonly [number, number];
+  readonly photoSize:          readonly [number, number];
+  readonly n_d:                number;
+  readonly V_d:                number;
+  readonly sampleCount:        number;
+  readonly refractionStrength: number;
+  readonly jitter:             number;
+  readonly refractionMode:     number;
+  readonly applySrgbOetf:      boolean;
+  readonly shape:              number;  // 0 = pill, 1 = prism, 2 = cube
+  readonly time:               number;  // seconds since start (used for cube rotation)
+  readonly pills:              readonly Pill[];
 };
 
-// 2 × vec4 head + 2 × vec4 spectral + vec4 meta + MAX_PILLS × 2 × vec4 per pill
-//   head:     resolution.xy, photo.xy                           (16B)
-//   spectral: n_d, V_d, N, refractionStrength                   (16B)
-//             jitter, refractionMode, pillCount, _              (16B)
-//   per pill: center.xyz, edgeR                                 (16B)
-//             half.xyz, _                                       (16B)
-const HEAD_SIZE = 16 + 16 + 16;               // 48
-const PILL_SIZE = 32;                         // 32
-const TOTAL_SIZE = HEAD_SIZE + PILL_SIZE * MAX_PILLS; // 48 + 256 = 304
+// Byte layout mirrors the WGSL `Frame` struct exactly (std140-ish rules):
+//   offset  0: resolution.xy,  photoSize.xy                      (16 B)
+//   offset 16: n_d, V_d, sampleCount, refractionStrength         (16 B)
+//   offset 32: jitter, refractionMode, pillCount, applySrgbOetf  (16 B)
+//   offset 48: shape, time, _pad, _pad                           (16 B)
+//   offset 64: pills[0..MAX_PILLS] — each pill is vec3 + f32 + vec3 + f32 (32 B)
+const HEAD_FLOATS = 16;                                // 64 B
+const PILL_FLOATS = 8;                                 // 32 B per pill
+const TOTAL_FLOATS = HEAD_FLOATS + PILL_FLOATS * MAX_PILLS;
+const TOTAL_BYTES  = TOTAL_FLOATS * 4;
+
+// Reused across frames so we don't allocate a ~1.2 KB Float32Array every tick.
+const scratch = new Float32Array(TOTAL_FLOATS);
 
 export function createFrameBuffer(device: GPUDevice): GPUBuffer {
   return device.createBuffer({
     label: 'frame',
-    size:  TOTAL_SIZE,
+    size:  TOTAL_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 }
 
 export function writeFrame(device: GPUDevice, buf: GPUBuffer, p: FrameParams): void {
-  const d = new Float32Array(TOTAL_SIZE / 4);
-  d[0]  = p.resolution[0];
-  d[1]  = p.resolution[1];
-  d[2]  = p.photoSize[0];
-  d[3]  = p.photoSize[1];
+  scratch.fill(0);
+  scratch[0] = p.resolution[0];
+  scratch[1] = p.resolution[1];
+  scratch[2] = p.photoSize[0];
+  scratch[3] = p.photoSize[1];
 
-  d[4]  = p.n_d;
-  d[5]  = p.V_d;
-  d[6]  = p.sampleCount;
-  d[7]  = p.refractionStrength;
+  scratch[4] = p.n_d;
+  scratch[5] = p.V_d;
+  scratch[6] = p.sampleCount;
+  scratch[7] = p.refractionStrength;
 
-  d[8]  = p.jitter;
-  d[9]  = p.refractionMode;
-  d[10] = p.pillCount;
-  d[11] = 0;
+  scratch[8]  = p.jitter;
+  scratch[9]  = p.refractionMode;
+  scratch[10] = Math.min(p.pills.length, MAX_PILLS);
+  scratch[11] = p.applySrgbOetf ? 1 : 0;
 
-  for (let i = 0; i < MAX_PILLS; i++) {
-    const base = 12 + i * 8;
-    const pill = i < p.pills.length ? p.pills[i] : null;
-    if (pill) {
-      d[base + 0] = pill.cx;
-      d[base + 1] = pill.cy;
-      d[base + 2] = pill.cz;
-      d[base + 3] = pill.edgeR;
-      d[base + 4] = pill.hx;
-      d[base + 5] = pill.hy;
-      d[base + 6] = pill.hz;
-      d[base + 7] = 0;
-    }
+  scratch[12] = p.shape;
+  scratch[13] = p.time;
+  // [14..15] padding (zeroed by scratch.fill above)
+
+  const pillCount = Math.min(p.pills.length, MAX_PILLS);
+  for (let i = 0; i < pillCount; i++) {
+    const pill = p.pills[i]!;
+    const base = HEAD_FLOATS + i * PILL_FLOATS;
+    scratch[base + 0] = pill.cx;
+    scratch[base + 1] = pill.cy;
+    scratch[base + 2] = pill.cz;
+    scratch[base + 3] = pill.edgeR;
+    scratch[base + 4] = pill.hx;
+    scratch[base + 5] = pill.hy;
+    scratch[base + 6] = pill.hz;
   }
-  device.queue.writeBuffer(buf, 0, d);
+  device.queue.writeBuffer(buf, 0, scratch);
 }
