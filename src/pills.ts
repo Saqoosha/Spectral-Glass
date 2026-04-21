@@ -23,7 +23,18 @@ type DragState =
   | { kind: 'idle' }
   | { kind: 'dragging'; pillIndex: number; offsetX: number; offsetY: number; pointerId: number };
 
-export function attachDrag(canvas: HTMLCanvasElement, pills: Pill[], dpr: number): () => void {
+/**
+ * Shape IDs mirror `SHAPE_ID` in main.ts / WGSL: 0 pill, 1 prism, 2 cube.
+ * `getShapeId` lets the drag layer tune hit testing without owning render state.
+ */
+export type ShapeIdFn = () => number;
+
+export function attachDrag(
+  canvas: HTMLCanvasElement,
+  pills: Pill[],
+  dpr: number,
+  getShapeId: ShapeIdFn = () => 0,
+): () => void {
   let state: DragState = { kind: 'idle' };
 
   const toWorld = (e: PointerEvent): { x: number; y: number } => {
@@ -31,20 +42,33 @@ export function attachDrag(canvas: HTMLCanvasElement, pills: Pill[], dpr: number
     return { x: (e.clientX - r.left) * dpr, y: (e.clientY - r.top) * dpr };
   };
 
-  // Use the SDF-relative AABB shrunk inward by edgeR so the hit region follows the
-  // rounded rim of the actual drawn shape (still axis-aligned — a rough approximation
-  // but much closer than the raw bounding box).
+  // Hit testing is shape-aware:
+  //   pill / prism (shape 0 / 1): XY axis-aligned box (Z is not visible top-down)
+  //   cube (shape 2):             circular radius using the 3D diagonal, because
+  //                               the rotating cube's silhouette changes as it
+  //                               tumbles — a circle around the center always
+  //                               contains the visible footprint.
   const findHit = (x: number, y: number): number => {
+    const shapeId = getShapeId();
     for (let i = pills.length - 1; i >= 0; i--) {
-      const p = pills[i]!;
-      if (Math.abs(x - p.cx) <= p.hx && Math.abs(y - p.cy) <= p.hy) return i;
+      const p  = pills[i]!;
+      const dx = x - p.cx;
+      const dy = y - p.cy;
+      if (shapeId === 2) {
+        const r = Math.max(p.hx, p.hy, p.hz);
+        if (dx * dx + dy * dy <= r * r) return i;
+      } else {
+        if (Math.abs(dx) <= p.hx && Math.abs(dy) <= p.hy) return i;
+      }
     }
     return -1;
   };
 
   const release = (pointerId: number) => {
     if (state.kind === 'dragging') {
-      try { canvas.releasePointerCapture(pointerId); } catch { /* already released */ }
+      try { canvas.releasePointerCapture(pointerId); } catch (err) {
+        console.debug('[pills] releasePointerCapture failed:', err);
+      }
       state = { kind: 'idle' };
     }
   };
@@ -60,7 +84,9 @@ export function attachDrag(canvas: HTMLCanvasElement, pills: Pill[], dpr: number
       offsetY:   y - pills[i]!.cy,
       pointerId: e.pointerId,
     };
-    try { canvas.setPointerCapture(e.pointerId); } catch { /* OK if capture fails */ }
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) {
+      console.debug('[pills] setPointerCapture failed:', err);
+    }
   };
 
   const move = (e: PointerEvent) => {

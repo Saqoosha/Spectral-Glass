@@ -14,6 +14,8 @@ export type FrameParams = {
   readonly applySrgbOetf:      boolean;
   readonly shape:              number;  // 0 = pill, 1 = prism, 2 = cube
   readonly time:               number;  // seconds since start (used for cube rotation)
+  readonly historyBlend:       number;  // 0..1 — 0.2 steady-state, 1.0 on scene-change frames to clear stale history
+  readonly heroLambda:         number;  // [380, 700] — jittered each frame; drives hero-wavelength back-face trace
   readonly pills:              readonly Pill[];
 };
 
@@ -21,14 +23,14 @@ export type FrameParams = {
 //   offset  0: resolution.xy,  photoSize.xy                      (16 B)
 //   offset 16: n_d, V_d, sampleCount, refractionStrength         (16 B)
 //   offset 32: jitter, refractionMode, pillCount, applySrgbOetf  (16 B)
-//   offset 48: shape, time, _pad, _pad                           (16 B)
+//   offset 48: shape, time, historyBlend, heroLambda             (16 B)
 //   offset 64: pills[0..MAX_PILLS] — each pill is vec3 + f32 + vec3 + f32 (32 B)
 const HEAD_FLOATS = 16;                                // 64 B
 const PILL_FLOATS = 8;                                 // 32 B per pill
 const TOTAL_FLOATS = HEAD_FLOATS + PILL_FLOATS * MAX_PILLS;
 const TOTAL_BYTES  = TOTAL_FLOATS * 4;
 
-// Reused across frames so we don't allocate a ~1.2 KB Float32Array every tick.
+// Reused across frames so we don't allocate a 320-byte Float32Array every tick.
 const scratch = new Float32Array(TOTAL_FLOATS);
 
 export function createFrameBuffer(device: GPUDevice): GPUBuffer {
@@ -58,7 +60,8 @@ export function writeFrame(device: GPUDevice, buf: GPUBuffer, p: FrameParams): v
 
   scratch[12] = p.shape;
   scratch[13] = p.time;
-  // [14..15] padding (zeroed by scratch.fill above)
+  scratch[14] = p.historyBlend;
+  scratch[15] = p.heroLambda;
 
   const pillCount = Math.min(p.pills.length, MAX_PILLS);
   for (let i = 0; i < pillCount; i++) {

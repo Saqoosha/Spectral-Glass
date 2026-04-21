@@ -1,7 +1,7 @@
 import { Pane } from 'tweakpane';
 
 export type Params = {
-  sampleCount: 3 | 8 | 16 | 32;
+  sampleCount: 3 | 8 | 16 | 32 | 64;
   shape: 'pill' | 'prism' | 'cube';
   n_d: number;
   V_d: number;
@@ -44,6 +44,9 @@ const MATERIALS: readonly Material[] = [
   { label: '✨ Rainbow glass', n_d: 1.55,  V_d: 8.0  },
   { label: '✨ Fire crystal',  n_d: 2.2,   V_d: 12.0 },
   { label: '✨ Unobtanium',    n_d: 3.2,   V_d: 4.0  },
+  // Low IOR × extreme dispersion — weak refraction but huge chromatic split
+  // per pixel. Rainbow everywhere.
+  { label: '✨ Rainbow soap',  n_d: 1.272, V_d: 2.0  },
 ];
 
 const PRESETS: readonly Preset[] = [
@@ -111,18 +114,22 @@ const PRESETS: readonly Preset[] = [
 
 export function initUi(
   params: Params,
-  reloadPhoto: () => void,
-  onChange: () => void,
+  reloadPhoto:      () => void,
+  onChange:         () => void,
+  markSceneChanged: () => void = () => {},
 ): Pane {
   const pane = new Pane({ title: 'Spectral Dispersion', expanded: true });
 
   const spectral = pane.addFolder({ title: 'Spectral' });
   spectral.addBinding(params, 'sampleCount', {
-    options: { '3 (fake RGB)': 3, '8': 8, '16 (default)': 16, '32': 32 },
+    options: { '3 (fake RGB)': 3, '8 (default)': 8, '16': 16, '32': 32, '64 (max)': 64 },
   });
   spectral.addBinding(params, 'n_d', { min: 1.0, max: 3.5, step: 0.001, label: 'IOR n_d' });
   spectral.addBinding(params, 'V_d', { min: 1,   max: 90,  step: 0.5,   label: 'Abbe V_d' });
   spectral.addBinding(params, 'refractionMode', {
+    // Approx: one back-face trace shared across all wavelengths (jittered each
+    // frame). On this engine it's texture-bandwidth bound, so the speedup vs
+    // Exact is modest (~15% at N=32) and dynamic scenes show more variance.
     options: { Exact: 'exact', Approx: 'approx' },
   });
   spectral.addBinding(params, 'temporalJitter', { label: 'Temporal jitter' });
@@ -145,6 +152,7 @@ export function initUi(
     btn.on('click', () => {
       preset.apply(params);
       pane.refresh();
+      markSceneChanged();
       onChange();
     });
   }
@@ -160,11 +168,19 @@ export function initUi(
       params.n_d = m.n_d;
       params.V_d = m.V_d;
       pane.refresh();
+      markSceneChanged();
       onChange();
     });
   }
 
-  pane.on('change', () => onChange());
+  // `ev.last === true` marks a committed value (slider release, dropdown pick,
+  // checkbox toggle) — use those as scene-change triggers so the history clears
+  // when geometry jumps. Mid-drag slider ticks (last: false) keep their
+  // temporal smoothing.
+  pane.on('change', (ev) => {
+    if (ev.last) markSceneChanged();
+    onChange();
+  });
 
   return pane;
 }

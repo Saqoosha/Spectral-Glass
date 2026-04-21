@@ -1,9 +1,10 @@
 export type GpuContext = {
-  readonly device:  GPUDevice;
-  readonly canvas:  HTMLCanvasElement;
-  readonly context: GPUCanvasContext;
-  readonly format:  GPUTextureFormat;
-  readonly dpr:     number;
+  readonly device:     GPUDevice;
+  readonly canvas:     HTMLCanvasElement;
+  readonly context:    GPUCanvasContext;
+  readonly format:     GPUTextureFormat;
+  readonly dpr:        number;
+  readonly hasTimestamp: boolean;  // timestamp-query feature was granted
 };
 
 export type InitFailure =
@@ -18,7 +19,13 @@ export async function initGpu(
   if (!('gpu' in navigator)) return { kind: 'no-webgpu' };
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) return { kind: 'no-adapter' };
-  const device = await adapter.requestDevice();
+  // Opportunistically enable timestamp-query for the in-render perf HUD. Not
+  // fatal if unavailable (e.g. older Chromium, some integrated GPUs).
+  const wantTimestamp = adapter.features.has('timestamp-query');
+  const device = await adapter.requestDevice(
+    wantTimestamp ? { requiredFeatures: ['timestamp-query'] } : undefined,
+  );
+  const hasTimestamp = device.features.has('timestamp-query');
 
   // Surface GPU errors we'd otherwise miss entirely — browsers auto-log uncaptured
   // validation errors to devtools but don't notify the page.
@@ -43,7 +50,7 @@ export async function initGpu(
   resizeCanvas(canvas, dpr);
   context.configure({ device, format, alphaMode: 'opaque' });
 
-  return { device, canvas, context, format, dpr };
+  return { device, canvas, context, format, dpr, hasTimestamp };
 }
 
 export function resizeCanvas(canvas: HTMLCanvasElement, dpr: number): { width: number; height: number } {

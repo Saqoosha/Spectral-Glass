@@ -77,10 +77,13 @@ src/
 │   ├── cauchy.ts               Wavelength → IOR (glTF formulation)
 │   ├── wyman.ts                Wyman CIE XYZ approximation
 │   ├── srgb.ts                 XYZ → linear sRGB matrix + OETF
-│   └── sdfPill.ts              3D pill SDF (mirrors WGSL version)
+│   ├── sdfPill.ts              3D pill SDF (mirrors WGSL version)
+│   ├── sdfPrism.ts             Triangular prism SDF (mirrors WGSL version)
+│   └── sdfCube.ts              Rounded box / cube SDF (mirrors WGSL version)
+├── persistence.ts              localStorage: validated load, debounced save, pagehide flush
 ├── photo.ts                    Picsum fetch → GPU texture (w/ gradient fallback)
-├── pills.ts                    Pill state + pointer drag
-├── ui.ts                       Tweakpane bindings
+├── pills.ts                    Pill state + shape-aware pointer drag
+├── ui.ts                       Tweakpane bindings (shape selector, presets, materials)
 ├── webgpu/
 │   ├── device.ts               Adapter + device + error handlers
 │   ├── history.ts              Ping-pong history textures
@@ -88,25 +91,20 @@ src/
 │   └── uniforms.ts             Typed uniform buffer writer
 └── shaders/
     ├── fullscreen.wgsl         Fullscreen triangle vertex shader
-    └── dispersion.wgsl         The whole spectral dispersion fragment
+    └── dispersion.wgsl         SDFs (pill/prism/cube) + spectral dispersion fragment
 
 tests/                          Vitest unit tests for each math module
 docs/
-├── superpowers/specs/          Design spec
-└── superpowers/plans/          Implementation plan
+└── ARCHITECTURE.md             Frame path, uniform layout, SDF & tracing details
 ```
 
 Math modules in `src/math/` are mirrored 1:1 by functions in
-`src/shaders/dispersion.wgsl` — the 19 vitest tests act as the reference
+`src/shaders/dispersion.wgsl` — the 31 vitest tests act as the reference
 implementation for the shader.
 
-## Design & plan
+## Design
 
-Detailed design and task breakdown:
-
-- [Architecture notes](docs/ARCHITECTURE.md) — module map, frame path, uniform layout, per-wavelength weighting rationale
-- [Design spec](docs/superpowers/specs/2026-04-21-spectral-dispersion-design.md)
-- [Implementation plan](docs/superpowers/plans/2026-04-21-real-spectral-dispersion-demo.md)
+- [Architecture notes](docs/ARCHITECTURE.md) — module map, frame path, uniform layout, per-wavelength weighting rationale, TIR fallback, SDF details for pill / prism / cube
 
 ## References
 
@@ -121,4 +119,4 @@ Detailed design and task breakdown:
 Tech demo / proof of technique. Not a library. No production website
 integration. If you want to pull the spectral-refraction technique into your
 own project, the interesting files are `src/shaders/dispersion.wgsl` and the
-four math modules in `src/math/`.
+six math modules in `src/math/`.

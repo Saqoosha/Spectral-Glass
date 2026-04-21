@@ -84,7 +84,13 @@ export function rebuildBindGroups(
   pl.bindGroups = buildBindGroups(ctx, pl.pipeline, frameBuf, photo, history);
 }
 
-export function draw(ctx: GpuContext, pl: Pipeline, history: History): void {
+export function draw(
+  ctx: GpuContext,
+  pl: Pipeline,
+  history: History,
+  timestampWrites?: GPURenderPassTimestampWrites,
+  onCommand?: (encoder: GPUCommandEncoder) => void,
+): void {
   const readIndex: 0 | 1 = history.current === 0 ? 1 : 0;
   const writeView = history.views[history.current];
   const encoder = ctx.device.createCommandEncoder({ label: 'draw' });
@@ -102,10 +108,13 @@ export function draw(ctx: GpuContext, pl: Pipeline, history: History): void {
         storeOp: 'store',
       },
     ],
+    ...(timestampWrites ? { timestampWrites } : {}),
   });
   pass.setPipeline(pl.pipeline);
   pass.setBindGroup(0, pl.bindGroups[readIndex]);
   pass.draw(3, 1, 0, 0);
   pass.end();
+  // Optional hook for resolving query sets into readback buffers before submit.
+  if (onCommand) onCommand(encoder);
   ctx.device.queue.submit([encoder.finish()]);
 }

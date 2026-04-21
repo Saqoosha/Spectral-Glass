@@ -1,9 +1,10 @@
 import { initGpu, resizeCanvas, needsSrgbOetf } from './webgpu/device';
 import { createPipeline, draw, rebuildBindGroups } from './webgpu/pipeline';
 import { createFrameBuffer, writeFrame } from './webgpu/uniforms';
+import { createPerf } from './webgpu/perf';
 import { loadPhoto, destroyPhoto } from './photo';
 import { attachDrag, defaultPills, type Pill } from './pills';
-import { defaultParams, initUi, mergeParams } from './ui';
+import { defaultParams, initUi, mergeParams, type Params } from './ui';
 import { createHistory, resizeHistory } from './webgpu/history';
 import { loadStored, debouncedSaver } from './persistence';
 
@@ -21,6 +22,13 @@ function isTypingTarget(t: EventTarget | null): boolean {
   const tag = t.tagName;
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable;
 }
+
+// Must match the WGSL `shape` uniform branches in dispersion.wgsl.
+const SHAPE_ID: Record<Params['shape'], number> = {
+  pill:  0,
+  prism: 1,
+  cube:  2,
+};
 
 async function main(): Promise<void> {
   const init = await initGpu('gpu', showFatal);
@@ -47,10 +55,17 @@ async function main(): Promise<void> {
   let pills: Pill[] = stored?.pills && stored.pills.length > 0
     ? stored.pills.map((p) => ({ ...p }))
     : defaultPills(initSize.width, initSize.height);
-  let detach = attachDrag(ctx.canvas, pills, ctx.dpr);
+  let detach = attachDrag(ctx.canvas, pills, ctx.dpr, () => SHAPE_ID[params.shape]);
 
   const saveDebounced = debouncedSaver(250);
-  const persist = () => saveDebounced(params, pills);
+  const persist = () => saveDebounced.schedule(params, pills);
+
+  // Scene-change flag — consumed next frame by the render loop to force a
+  // full historyBlend (1.0) so the previous scene doesn't ghost in. 2 frames
+  // covers the ping-pong double buffering: the "prev" we read from after a
+  // change is the one written before the change happened.
+  let resetHistoryFrames = 2;
+  const markSceneChanged = () => { resetHistoryFrames = 2; };
 
   // Race guard: a slow photo fetch shouldn't overwrite a newer one if the user
   // clicks Reload twice quickly.
@@ -63,17 +78,27 @@ async function main(): Promise<void> {
       const old = photoNow;
       photoNow = next;
       rebuildBindGroups(ctx, pl, frameBuf, photoNow, history);
+      markSceneChanged();
       // Hold off the destroy until pending GPU work referencing `old` has drained.
       ctx.device.queue.onSubmittedWorkDone().then(() => destroyPhoto(old));
     } catch (err) {
       console.error('[photo] reload failed:', err);
     }
   };
-  initUi(params, () => { void reloadPhoto(); }, persist);
+  initUi(params, () => { void reloadPhoto(); }, persist, markSceneChanged);
 
-  // Persist after every drag — we don't know exactly when a drag ended, but
-  // every pointer event that moves a pill is followed by a pointerup/cancel,
-  // so piggyback on the global pointer flow to catch all release paths.
+  // Flush any pending debounced save on page hide so a drag-then-close doesn't
+  // lose the last drag position.
+  const onPageHide = () => saveDebounced.flush();
+  window.addEventListener('pagehide',        onPageHide);
+  window.addEventListener('beforeunload',    onPageHide);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) saveDebounced.flush();
+  });
+
+  // Save on every canvas pointer release — not drag-aware, but the saver is
+  // debounced (250 ms) so spurious releases (non-drag clicks, misses) are cheap,
+  // and every real drag ends with one of these events.
   const onPointerRelease = () => persist();
   ctx.canvas.addEventListener('pointerup',     onPointerRelease);
   ctx.canvas.addEventListener('pointercancel', onPointerRelease);
@@ -92,10 +117,11 @@ async function main(): Promise<void> {
         cx: Math.random() * cur.width,
         cy: Math.random() * cur.height,
       }));
-      detach = attachDrag(ctx.canvas, pills, ctx.dpr);
+      detach = attachDrag(ctx.canvas, pills, ctx.dpr, () => SHAPE_ID[params.shape]);
+      markSceneChanged();
       persist();
     }
-    if (k === 'r') { void reloadPhoto(); }
+    if (k === 'r') { void reloadPhoto(); /* already markSceneChanged'd on success */ }
   };
   const onKeyUp = (e: KeyboardEvent) => {
     if (e.key.toLowerCase() === 'z') forceN3 = false;
@@ -105,6 +131,14 @@ async function main(): Promise<void> {
 
   const applySrgbOetf = needsSrgbOetf(ctx.format);
   const startTime     = performance.now();
+
+  // Opt-in perf HUD: `?perf=1` + `hasTimestamp` enables GPU timestamp queries
+  // and a small overlay that exposes `window._perf` so benchmark scripts can
+  // read average GPU time without needing a protocol-level hook.
+  const perfEnabled = ctx.hasTimestamp && new URLSearchParams(location.search).has('perf');
+  const perf        = perfEnabled ? createPerf(ctx.device) : null;
+  const perfWindow: { samples: number[]; lastMs: number } = { samples: [], lastMs: 0 };
+  (window as unknown as { _perf?: typeof perfWindow })._perf = perfEnabled ? perfWindow : undefined;
 
   const loop = () => {
     try {
@@ -121,29 +155,51 @@ async function main(): Promise<void> {
         pill.hz    = params.pillThick / 2;
         pill.edgeR = Math.min(params.edgeR, pill.hx, pill.hy, pill.hz);
       }
-      const shapeId = params.shape === 'cube'  ? 2
-                    : params.shape === 'prism' ? 1
-                    : 0;
+      const historyBlend = resetHistoryFrames > 0 ? 1.0 : 0.2;
+      if (resetHistoryFrames > 0) resetHistoryFrames -= 1;
+
+      // Modulo the time to stay within float32 precision — sin/cos of huge
+      // arguments visibly stutter after hours of uptime. Any value above the
+      // slowest rotation period (~31.4 s for 0.2 rad/s) is safe.
+      const elapsed  = (performance.now() - startTime) * 0.001;
+      const timeSafe = elapsed % 1e4;
+
+      const N = forceN3 ? 3 : params.sampleCount;
+      // Hero wavelength: one visible-range wavelength per frame, all pixels
+      // share it. Temporal history accumulates across hero choices, so the
+      // single-trace geometry error averages out over ~5 frames.
+      const heroLambda = 380 + Math.random() * 320;
       writeFrame(ctx.device, frameBuf, {
         resolution:         [width, height],
         photoSize:          [photoNow.width, photoNow.height],
         n_d:                params.n_d,
         V_d:                params.V_d,
-        sampleCount:        forceN3 ? 3 : params.sampleCount,
+        sampleCount:        N,
         refractionStrength: params.refractionStrength,
-        jitter:             params.temporalJitter ? Math.random() / params.sampleCount : 0,
+        jitter:             params.temporalJitter ? Math.random() / N : 0,
         refractionMode:     params.refractionMode === 'exact' ? 0 : 1,
         applySrgbOetf,
-        shape:              shapeId,
-        time:               (performance.now() - startTime) * 0.001,
+        shape:              SHAPE_ID[params.shape],
+        time:               timeSafe,
+        historyBlend,
+        heroLambda,
         pills,
       });
 
-      draw(ctx, pl, history);
+      draw(ctx, pl, history, perf?.writes, perf ? (enc) => perf.resolve(enc) : undefined);
       history.current = history.current === 0 ? 1 : 0;
+
+      if (perf) {
+        void perf.readMs().then((ms) => {
+          if (ms === null || !Number.isFinite(ms)) return;
+          perfWindow.lastMs = ms;
+          perfWindow.samples.push(ms);
+          if (perfWindow.samples.length > 240) perfWindow.samples.shift();
+        });
+      }
     } catch (err) {
       console.error('[frame] render loop aborted:', err);
-      showFatal(`Render loop stopped: ${err instanceof Error ? err.message : String(err)}`);
+      showFatal(`Render loop stopped: ${err instanceof Error ? err.message : String(err)}. Please reload the page.`);
       return;  // do NOT reschedule — freezing is better than a flood of identical errors
     }
     requestAnimationFrame(loop);

@@ -23,8 +23,8 @@ struct Frame {
   applySrgbOetf:      f32,  // 1.0 if canvas is non-sRGB and we must encode; 0.0 if -srgb
   shape:              f32,  // 0 = pill (stadium), 1 = prism, 2 = cube (rotates)
   time:               f32,  // seconds since start (used for cube rotation)
-  _pad1:              f32,
-  _pad2:              f32,
+  historyBlend:       f32,  // 0.2 steady state, 1.0 when the scene changed this frame
+  heroLambda:         f32,  // jittered each frame in [380,700]; Hero mode uses this
   pills:              array<PillGpu, MAX_PILLS>,
 };
 
@@ -108,14 +108,16 @@ fn sdfPrism(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> f32 {
 fn sceneSdf(p: vec3<f32>) -> f32 {
   let count   = min(u32(frame.pillCount), MAX_PILLS);
   let shapeId = i32(frame.shape + 0.5);
-  let rot     = cubeRotation(frame.time);  // unused unless shape==cube
   var d: f32 = 1e9;
   for (var i: u32 = 0u; i < count; i = i + 1u) {
     let pill  = frame.pills[i];
     let local = p - pill.center;
     var pd: f32;
     if (shapeId == 2) {
-      pd = sdfCube(rot * local, pill.halfSize, pill.edgeR);
+      // Cube is rotated in local space before SDF evaluation. `frame.time` is
+      // constant per fragment so the rotation matrix is consistent across all
+      // sceneSdf calls within one pixel (sphere trace + normal finite diffs).
+      pd = sdfCube(cubeRotation(frame.time) * local, pill.halfSize, pill.edgeR);
     } else if (shapeId == 1) {
       pd = sdfPrism(local, pill.halfSize, pill.edgeR);
     } else {
@@ -124,6 +126,20 @@ fn sceneSdf(p: vec3<f32>) -> f32 {
     d = min(d, pd);
   }
   return d;
+}
+
+// Upper bound on the internal path length a ray can take inside any pill in
+// the scene. Used to cap insideTrace. For a rotated cube the diagonal (√3
+// times the max half-side, doubled) is the longest possible chord; for pill
+// and prism the 3D diagonal of the AABB is an upper bound too.
+fn maxInternalPath() -> f32 {
+  let count = min(u32(frame.pillCount), MAX_PILLS);
+  var m: f32 = 0.0;
+  for (var i: u32 = 0u; i < count; i = i + 1u) {
+    let hs = frame.pills[i].halfSize;
+    m = max(m, length(hs) * 2.0);
+  }
+  return max(m, 32.0);  // floor so degenerate zero-size pills don't stop march
 }
 
 fn sceneNormal(p: vec3<f32>) -> vec3<f32> {
@@ -210,6 +226,14 @@ fn schlickFresnel(cosT: f32, n_d: f32) -> f32 {
   return f0 + (1.0 - f0) * k * k * k * k * k;
 }
 
+// Hash a 2D input to [0,1). Dave Hoskins' hash12, small-footprint + low bias
+// enough for variance reduction (we're not doing security here).
+fn hash21(p: vec2<f32>) -> f32 {
+  var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
+  p3 = p3 + vec3<f32>(dot(p3, p3.yzx + vec3<f32>(33.33)));
+  return fract((p3.x + p3.y) * p3.z);
+}
+
 // sRGB OETF (linear → gamma-encoded). Applied iff `frame.applySrgbOetf == 1`,
 // i.e. when the canvas format is non-sRGB (getPreferredCanvasFormat typically
 // returns bgra8unorm) and the hardware won't auto-encode.
@@ -254,77 +278,99 @@ fn fs_main(@location(0) uv: vec2<f32>) -> FsOut {
   let N        = clamp(i32(frame.sampleCount), 1, MAX_N);
   let strength = frame.refractionStrength;
   let jitter   = frame.jitter;
-  let approx   = frame.refractionMode > 0.5;
+  let useHero  = frame.refractionMode > 0.5;
 
-  // Approx mode does one shared back-face trace at the central wavelength.
+  // Cap the inside-trace at the longest possible chord through the largest
+  // pill in the scene. Thick configurations would otherwise bail out mid-body.
+  let internalMax = maxInternalPath();
+
+  // Hero mode: one back-face trace at a PER-FRAME-RANDOMIZED wavelength
+  // (Wilkie 2014). Unlike plain "approx" fixed at 540 nm, the randomization +
+  // temporal history accumulation averages out the single-trace error across
+  // ~5 frames — so 4–8 samples in Hero mode look like 16–32 samples in Exact.
   var sharedExit  = h.p;
   var sharedNBack = -nFront;
-  if (approx) {
-    let iorMid  = cauchyIor(540.0, n_d, V_d);
-    let r1mid   = refract(rd, nFront, 1.0 / iorMid);
-    sharedExit  = insideTrace(h.p, r1mid, 300.0);
+  if (useHero) {
+    let iorHero = cauchyIor(frame.heroLambda, n_d, V_d);
+    let r1hero  = refract(rd, nFront, 1.0 / iorHero);
+    sharedExit  = insideTrace(h.p, r1hero, internalMax);
     sharedNBack = -sceneNormal(sharedExit);
   }
 
-  // Pre-compute the external front-face reflection — used both by the final
-  // Fresnel mix AND as a TIR fallback inside the per-wavelength loop.
+  // External front-face reflection — used BOTH as TIR fallback and as the
+  // per-wavelength reflection color (mixed via per-λ Fresnel below).
   let refl     = reflect(rd, nFront);
   let reflUv   = screenUvFromWorld(h.p.xy) + refl.xy * 0.2;
-  let reflSrc  = textureSampleLevel(photoTex, photoSmp, coverUv(reflUv), 0.0).rgb;
+  let reflSrc  = textureSampleLevel(photoTex, photoSmp, coverUv(reflUv), 0.0).rgb
+              * vec3<f32>(0.85, 0.9, 1.0);
 
-  // For each wavelength λ, weight the refracted photo sample (a linear RGB
-  // triplet interpreted as a per-channel reflectance proxy) by that wavelength's
-  // own sRGB primary color — xyzToSrgb(cmf(λ)). Short-wavelength samples then
-  // contribute to the blue channel, long to red, producing real chromatic
-  // dispersion where uv_i diverges per wavelength. On TIR at the back face we
-  // fall back to the external reflection (physically: total reflection), which
-  // keeps the wavelength's contribution rather than leaving a black hole.
+  // Front-face cosine (angle of incidence). Identical for every wavelength at
+  // the front face, so compute once.
+  let cosT = max(dot(-rd, nFront), 0.0);
+
+  // Per-pixel stratified jitter: each pixel gets its own wavelength phase so
+  // adjacent pixels sample DIFFERENT λ. The eye (and post-process history
+  // accumulation) averages the spatial noise, so the rainbow looks smooth at
+  // a given N — effectively 2-4× more samples worth of quality for free.
+  // `jitter` (frame counter) breaks temporal coherence so history accumulates
+  // new choices each frame instead of locking onto one stratum.
+  let pxJit = hash21(px + vec2<f32>(jitter * 1000.0, frame.time * 37.0));
+
+  // For each wavelength λ:
+  //   1. compute per-λ IOR via Cauchy
+  //   2. refract into the glass
+  //   3. insideTrace to the back face (skipped in Approx mode — reuses sharedExit)
+  //   4. refract out
+  //   5. sample photo at the exit UV; TIR → reflection color instead
+  //   6. PER-WAVELENGTH Fresnel mix between refract and reflect (blue λ has
+  //      higher IOR → higher Fresnel → more reflective at rim, produces the
+  //      visible blue-tinged rim we see in real prisms and diamonds)
+  //   7. weight by xyzToSrgb(cmf(λ)) and accumulate
   var rgbAccum  = vec3<f32>(0.0);
   var rgbWeight = vec3<f32>(0.0);
 
   for (var i: i32 = 0; i < N; i = i + 1) {
-    let t      = (f32(i) + 0.5 + jitter) / f32(N);
+    let t      = (f32(i) + 0.5 + pxJit) / f32(N);
     let lambda = mix(380.0, 700.0, t);
     let ior    = cauchyIor(lambda, n_d, V_d);
     let r1     = refract(rd, nFront, 1.0 / ior);
-    if (dot(r1, r1) < 1e-4) { continue; }  // TIR on entry (vacuum→denser; shouldn't fire)
+    if (dot(r1, r1) < 1e-4) { continue; }  // TIR on entry (shouldn't fire for vacuum→denser)
 
     var pExit = sharedExit;
     var nBack = sharedNBack;
-    if (!approx) {
-      pExit = insideTrace(h.p, r1, 300.0);
+    if (!useHero) {
+      pExit = insideTrace(h.p, r1, internalMax);
       nBack = -sceneNormal(pExit);
     }
     let r2 = refract(r1, nBack, ior);
 
-    var L: vec3<f32>;
+    var refractL: vec3<f32>;
     if (dot(r2, r2) < 1e-4) {
-      // TIR on exit — light cannot leave. Use the external reflection so this
-      // wavelength's slot still participates in the spectral sum.
-      L = reflSrc;
+      refractL = reflSrc;  // exit TIR → take the external reflection
     } else {
       let uvOff = screenUvFromWorld(pExit.xy) + r2.xy * strength;
-      L = textureSampleLevel(photoTex, photoSmp, coverUv(uvOff), 0.0).rgb;
+      refractL  = textureSampleLevel(photoTex, photoSmp, coverUv(uvOff), 0.0).rgb;
     }
+
+    // Per-wavelength Schlick Fresnel: short λ (blue) has higher IOR → higher F.
+    let F_lambda = schlickFresnel(cosT, ior);
+    let L        = mix(refractL, reflSrc, F_lambda);
+
     let lambdaRgb = max(xyzToSrgb(cieXyz(lambda)), vec3<f32>(0.0));
     rgbAccum  = rgbAccum  + L * lambdaRgb;
     rgbWeight = rgbWeight + lambdaRgb;
   }
 
-  // Normalize against the sum of per-wavelength sRGB weights so a flat white
-  // spectrum → neutral output (independent of N).
-  let rgb = max(rgbAccum / max(rgbWeight, vec3<f32>(1e-4)), vec3<f32>(0.0));
-
-  let cosT    = max(dot(-rd, nFront), 0.0);
-  let F       = schlickFresnel(cosT, n_d);
-  let reflRgb = reflSrc * vec3<f32>(0.85, 0.9, 1.0);
-
-  let outRgb = mix(rgb, reflRgb, F);
+  // Normalize against the per-wavelength primary sum — keeps a flat white
+  // spectrum neutral for any N.
+  let outRgb = max(rgbAccum / max(rgbWeight, vec3<f32>(1e-4)), vec3<f32>(0.0));
 
   // History is stored in rgba16float (linear). Blend in linear space; encode
-  // for display only on the swapchain write.
+  // for display only on the swapchain write. `historyBlend` is normally 0.2 —
+  // host bumps it to 1.0 for one frame on any scene change (photo reload,
+  // preset click, shape switch) so the previous scene doesn't ghost in.
   let prev  = textureSampleLevel(historyTex, historySmp, uv, 0.0).rgb;
-  let blend = mix(prev, outRgb, 0.2);
+  let blend = mix(prev, outRgb, frame.historyBlend);
 
   var o: FsOut;
   o.color   = vec4<f32>(encodeDisplay(blend), 1.0);

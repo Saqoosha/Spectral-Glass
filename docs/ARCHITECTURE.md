@@ -11,7 +11,7 @@ everything is an SDF in a fullscreen fragment shader.
 │                                                                      │
 │  1. resize canvas + history if needed                                │
 │  2. push params → pills (hx/hy/hz/edgeR)                             │
-│  3. writeFrame → uniform buffer (304 B: scalars + MAX_PILLS × 32 B) │
+│  3. writeFrame → uniform buffer (320 B: scalars + MAX_PILLS × 32 B) │
 │  4. draw pass:                                                       │
 │       fullscreen triangle → fs_main                                  │
 │         per-fragment sphere-trace scene SDF                          │
@@ -43,8 +43,9 @@ and swapped based on `history.current` — no per-frame bind group allocation.
 | `src/pills.ts` | Pill state (mutated by drag) + pointer-event lifecycle with a discriminated-union drag state. |
 | `src/ui.ts` | Tweakpane bindings for `Params`. |
 | `src/main.ts` | Wires everything, runs the RAF loop inside a `try/catch`, owns reload-race protection via `photoRevision`. |
-| `src/math/{cauchy,wyman,srgb,sdfPill}.ts` | Pure functions mirrored by the WGSL of the same name. The 19 vitest tests are the reference. |
-| `src/shaders/dispersion.wgsl` | Everything visible: SDF, sphere-trace, Cauchy, CIE, sRGB, Fresnel, OETF, spectral accumulation. |
+| `src/math/{cauchy,wyman,srgb,sdfPill,sdfPrism,sdfCube}.ts` | Pure functions mirrored by the WGSL of the same name. The 31 vitest tests are the reference. |
+| `src/shaders/dispersion.wgsl` | Everything visible: SDFs (pill/prism/cube + rotation), sphere-trace, Cauchy, CIE, sRGB, Fresnel, OETF, spectral accumulation, TIR fallback. |
+| `src/persistence.ts` | localStorage read/write with schema versioning, field validation, and a trailing-edge debounced saver (+ `flush()` for pagehide). |
 
 ## Uniform layout
 
@@ -54,11 +55,17 @@ Mirrors the WGSL `Frame` struct exactly (std140-ish rules):
 offset  0  │ resolution.xy,  photoSize.xy                        (16 B)
 offset 16  │ n_d, V_d, sampleCount, refractionStrength           (16 B)
 offset 32  │ jitter, refractionMode, pillCount, applySrgbOetf    (16 B)
-offset 48  │ pills[0..8]   each pill is:                         (32 B each)
+offset 48  │ shape, time, historyBlend, _pad                     (16 B)
+offset 64  │ pills[0..8]   each pill is:                         (32 B each)
            │   center.xyz, edgeR,   halfSize.xyz, _pad
 ```
 
-Total 304 bytes. Uniform size is fixed — pills beyond `pillCount` are zeros.
+Total 320 bytes. Uniform size is fixed — pills beyond `pillCount` are zeros.
+
+`shape` selects the SDF (0=pill, 1=prism, 2=cube). `time` drives cube rotation.
+`historyBlend` is 0.2 in steady state and 1.0 for one frame after a scene
+change (preset click, photo reload, shape switch, pill shuffle) so stale
+temporal history doesn't ghost in.
 
 ## Why per-wavelength sRGB weighting?
 
@@ -80,21 +87,41 @@ flat-UV case:
 The normalization denominator is the same per-wavelength primary-sum, which
 keeps the output neutral for any `N`.
 
-## SDF and sphere tracing
+## SDFs and sphere tracing
 
-The pill is a two-stage rounded extrusion:
+Three shapes, all rounded (edgeR) extrusions. `sceneSdf` dispatches on the
+`shape` uniform:
 
-1. 2D **stadium** silhouette in XY: `roundedBox` shrunk by `edgeR`, then rounded
-   by the shortest shrunk half-axis (so corners fully round into half-circles).
-2. Extrude into Z: combine the 2D distance with `|z| - hz + edgeR` via
-   `length/min/max` and subtract `edgeR` again → rounded top/bottom corners.
+- **Pill** — 2D stadium silhouette in XY (`roundedBox` shrunk by `edgeR`, then
+  rounded by the shortest shrunk half-axis), extruded into Z with the same
+  rounded-corner trick on `|z|`.
+- **Prism** — isosceles triangle cross-section in **YZ** (apex at +Z, base at
+  −Z), extruded along X. `halfSize.x` is the extrusion length, `halfSize.y`
+  the base half-width, `halfSize.z` the apex height. From top-down the
+  silhouette is a rectangle; the triangle's slanted YZ faces bend rays
+  laterally, producing the classic prism rainbow at contrast edges in the
+  photo.
+- **Cube** — standard rounded box. `local = rot * (p - center)` where `rot`
+  comes from `cubeRotation(frame.time)` (tumbles around X+Z at 0.31 + 0.20
+  rad/s). `cubeRotation` is called only inside the cube branch.
 
-Camera is orthographic top-down. Sphere trace marches from `(px, px, 400)` in
-`-Z` with `HIT_EPS = 0.25` and `MIN_STEP = 0.5`. Inside-trace uses `-sceneSdf`
-to find the back-surface exit.
+Camera is orthographic top-down. Sphere trace marches from `(px, py, 400)` in
+`−Z` with `HIT_EPS = 0.25` and `MIN_STEP = 0.5`. Inside-trace uses `-sceneSdf`
+to find the back-surface exit; its distance cap is `maxInternalPath()` —
+the longest possible chord through any live pill — instead of a fixed 300,
+so thick shapes don't bail out mid-body.
 
 Normals come from central differences on the scene SDF — four extra SDF
 evaluations per shaded pixel, cheap.
+
+### TIR fallback
+
+When `refract()` returns a zero vector at the back face (total internal
+reflection), the wavelength would otherwise drop out and leave a black hole
+where every λ TIR'd. Instead the loop substitutes the external front-face
+reflection sample for that wavelength, which matches the physics ("total
+reflection" → sample what would reflect off the front) and keeps the spectral
+weighting balanced.
 
 ## Error handling
 
@@ -112,15 +139,19 @@ evaluations per shaded pixel, cheap.
 
 ## Testing
 
-Math modules are unit-tested (19 tests, all pass):
+Math modules are unit-tested (31 tests, all pass):
 
 - `cauchyIor` at d-line, monotonicity, `V_d` sensitivity, 1.0 clamp.
 - `cieXyz` Y-peak near 555 nm, red dominance at 650 nm, blue at 450 nm, near-zero at UV/IR.
 - `xyzToLinearSrgb` D65 white, Y-only luminance-biased gray.
 - `linearToGamma` identity endpoints, linear segment, power-curve segment.
 - `sdfPill3d` sign, symmetry, top-face zero-crossing, rounded-edge smoothness.
+- `sdfPrism` interior sign, far-field positivity, apex/base edge values, both mirror symmetries, apex narrowing.
+- `sdfCube` interior, far-field, face zero-crossings, symmetry, rounded-corner smoothness.
 
-Shader correctness is verified visually — no automated GPU tests.
+WGSL versions are hand-mirrored by the corresponding TS module; the TS tests
+act as the reference. Shader correctness beyond that is verified visually —
+no automated GPU tests.
 
 ## Performance budget
 
