@@ -70,7 +70,7 @@ fragment shader's rays will trace.
 | `src/pills.ts` | Pill state (mutated by drag) + pointer-event lifecycle with a discriminated-union drag state. |
 | `src/ui.ts` | Tweakpane bindings for `Params`. |
 | `src/main.ts` | Wires everything, runs the RAF loop inside a `try/catch`, owns reload-race protection via `photoRevision`. |
-| `src/math/{cauchy,wyman,srgb,sdfPill,sdfPrism,sdfCube}.ts` | Pure functions mirrored by the WGSL of the same name. The 31 vitest tests are the reference. |
+| `src/math/{cauchy,wyman,srgb,sdfPill,sdfPrism,sdfCube,camera,cube}.ts` | Pure functions mirrored by the WGSL of the same name. The vitest suite (≈ 45 tests) is the reference. |
 | `src/shaders/dispersion.wgsl` | Everything visible: SDFs (pill/prism/cube + rotation), sphere-trace, Cauchy, CIE, sRGB, Fresnel, OETF, spectral accumulation, TIR fallback. |
 | `src/persistence.ts` | localStorage read/write with schema versioning, field validation, and a trailing-edge debounced saver (+ `flush()` for pagehide). |
 
@@ -152,14 +152,15 @@ prism, the back-surface exit comes from marching `-sceneSdf` (inside-trace),
 capped at `maxInternalPath()` — the longest possible chord through any live
 pill. **Cube** takes a shortcut: `cubeAnalyticExit` solves ray-box slab
 intersection in the cube's rotated local frame, which replaces the per-
-wavelength 48-iter inside-trace and 6-iter finite-diff normal with an O(1)
-closed-form exit point + rounded-box gradient normal. Roughly 7–8× faster
-for the cube case; pill/prism are unchanged.
+wavelength 48-iter inside-trace and the 6-eval finite-diff normal with an
+O(1) closed-form exit point + rounded-box gradient normal. Roughly 7–8×
+faster for the cube case; pill/prism are unchanged.
 
-Normals come from central differences on the scene SDF for pill/prism — four
-extra SDF evaluations per shaded pixel, cheap. Cube uses the analytical
-rounded-box gradient at the exit point (same formula as the finite-diff
-would converge to), so the rounded rim keeps its soft refraction.
+Normals come from central differences on the scene SDF for pill/prism — six
+extra SDF evaluations per shaded pixel (one pair per axis), cheap. Cube uses
+the analytical rounded-box gradient at the exit point (same formula as the
+finite-diff would converge to), so the rounded rim keeps its soft
+refraction.
 
 ### Per-wavelength loop
 
@@ -215,7 +216,8 @@ Apple Silicon.
 
 ## Testing
 
-Math modules are unit-tested (41 tests, all pass):
+Math modules are unit-tested (~45 tests, all pass — exact count drifts with
+each new case, see `bun run test`):
 
 - `cauchyIor` at d-line, monotonicity, `V_d` sensitivity, 1.0 clamp.
 - `cieXyz` Y-peak near 555 nm, red dominance at 650 nm, blue at 450 nm, near-zero at UV/IR.
@@ -226,6 +228,7 @@ Math modules are unit-tested (41 tests, all pass):
 - `sdfCube` interior, far-field, face zero-crossings, symmetry, rounded-corner smoothness.
 - `cameraZForFov` at 60°/90°, monotonicity with FOV, linearity with height, slider bounds.
 - `cubeRotationColumns` identity at t=0, orthonormality, matches the original rz·rx derivation, WGSL padded layout, pad slots zero, rejects non-finite time.
+- `tests/uniformsLayout.test.ts` parses the WGSL `struct Frame` declaration and pins the field set + order so anyone editing it gets nudged to update `src/webgpu/uniforms.ts` too.
 
 WGSL versions are hand-mirrored by the corresponding TS module; the TS tests
 act as the reference. Shader correctness beyond that is verified visually —
@@ -253,9 +256,19 @@ All configurations hold 60 fps with zero dropped frames. On TBDR hardware
 pass mostly helps by emitting zero heavy fragments outside the cube
 silhouette. Discrete (non-TBDR) GPUs see a larger relative win.
 
-### Cost breakdown (pill pixel, N=8)
+### Cost breakdown
 
-- ~48 SDF evals (front trace + per-λ inside-trace × 8).
+Pill / prism pixel (N=8):
+- Up to 64 sphereTrace SDF evals (front trace) + 8 × up to 48 inside-trace
+  evals + 6 normal evals + 8 × 6 back-normal evals — dominated by the per-λ
+  back-trace.
 - 8 photo texture taps + 1 reflection tap + 1 history tap.
 - 8 Cauchy + Wyman CIE evaluations + 8 per-λ Fresnel mixes.
 - Usually texture-bandwidth bound on Apple Silicon.
+
+Cube pixel (N=8):
+- Same 64 sphereTrace + 6 front-normal evals as above, but the per-λ back
+  trace is `cubeAnalyticExit` — O(1) slab intersection + rounded-box gradient.
+  The 8 × (48 + 6) inside-trace + back-normal evals from the pill/prism path
+  collapse to ~30 ALU ops.
+- Texture taps + spectral math identical to pill/prism.
