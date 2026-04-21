@@ -249,12 +249,80 @@ fn encodeDisplay(c: vec3<f32>) -> vec3<f32> {
   return c;
 }
 
+// ---------- proxy vertex shader ----------
+//
+// Draws a per-pill 2D screen-space quad instead of a fullscreen triangle.
+// Only pixels covered by the quad run the heavy refraction shader. Pixels
+// outside run only the cheap `fs_bg` in the preceding pass.
+
+// 2 triangles = 6 vertices forming a unit quad in [-1, 1]^2.
+const QUAD_CORNERS: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
+  vec2<f32>(-1.0, -1.0), vec2<f32>( 1.0, -1.0), vec2<f32>(-1.0,  1.0),
+  vec2<f32>( 1.0, -1.0), vec2<f32>( 1.0,  1.0), vec2<f32>(-1.0,  1.0),
+);
+
+struct VsOutProxy {
+  @builtin(position) pos: vec4<f32>,
+  @location(0)       uv : vec2<f32>,
+};
+
+@vertex
+fn vs_proxy(
+  @builtin(vertex_index)   vi: u32,
+  @builtin(instance_index) ii: u32,
+) -> VsOutProxy {
+  var out: VsOutProxy;
+  if (ii >= u32(frame.pillCount)) {
+    // Degenerate instance (over pillCount) — push off-screen so fragment skips.
+    out.pos = vec4<f32>(2.0, 2.0, 0.5, 1.0);
+    out.uv  = vec2<f32>(0.0);
+    return out;
+  }
+  let pill    = frame.pills[ii];
+  let shapeId = i32(frame.shape + 0.5);
+
+  // Screen-space XY extent of the shape (tight enough to cover silhouette,
+  // loose enough to be simple). Pill / prism don't rotate so halfSize.xy is
+  // exact. Cube rotates — use the 3D-diagonal upper bound so any orientation
+  // stays covered.
+  var extent: vec2<f32>;
+  if (shapeId == 2) {
+    let m = max(pill.halfSize.x, max(pill.halfSize.y, pill.halfSize.z)) + pill.edgeR;
+    extent = vec2<f32>(m * 1.7321);  // √3 upper bound
+  } else {
+    extent = pill.halfSize.xy + vec2<f32>(pill.edgeR);
+  }
+
+  let worldXY = pill.center.xy + QUAD_CORNERS[vi] * extent;
+  // World pixels (top-origin) → NDC. Flip Y because DOM is top-origin but NDC
+  // is bottom-origin.
+  let clipX = (worldXY.x / frame.resolution.x) * 2.0 - 1.0;
+  let clipY = 1.0 - (worldXY.y / frame.resolution.y) * 2.0;
+  out.pos = vec4<f32>(clipX, clipY, 0.5, 1.0);
+  out.uv  = worldXY / frame.resolution;
+  return out;
+}
+
 // ---------- fragment ----------
 
 struct FsOut {
   @location(0) color:   vec4<f32>,
   @location(1) history: vec4<f32>,
 };
+
+// Cheap background pass: sample photo, blend history, done. No sphere-trace,
+// no refraction, no per-wavelength loop. Runs for the whole screen; the proxy
+// pass then overrides covered pixels with the heavy shader's output.
+@fragment
+fn fs_bg(@location(0) uv: vec2<f32>) -> FsOut {
+  let bg    = textureSampleLevel(photoTex, photoSmp, coverUv(uv), 0.0).rgb;
+  let prev  = textureSampleLevel(historyTex, historySmp, uv, 0.0).rgb;
+  let blend = mix(prev, bg, frame.historyBlend);
+  var o: FsOut;
+  o.color   = vec4<f32>(encodeDisplay(blend), 1.0);
+  o.history = vec4<f32>(blend, 1.0);
+  return o;
+}
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> FsOut {

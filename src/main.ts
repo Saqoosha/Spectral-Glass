@@ -186,7 +186,7 @@ async function main(): Promise<void> {
         pills,
       });
 
-      draw(ctx, pl, history, perf?.writes, perf ? (enc) => perf.resolve(enc) : undefined);
+      draw(ctx, pl, history, pills.length, perf?.writes, perf ? (enc) => perf.resolve(enc) : undefined);
       history.current = history.current === 0 ? 1 : 0;
 
       if (perf) {

@@ -5,8 +5,12 @@ import vsSrc from '../shaders/fullscreen.wgsl?raw';
 import fsSrc from '../shaders/dispersion.wgsl?raw';
 
 export type Pipeline = {
-  readonly pipeline:   GPURenderPipeline;
-  bindGroups:          [GPUBindGroup, GPUBindGroup];  // index = history read slot (1 - current)
+  /** Fullscreen bg pass: cheap photo+history blend, covers every pixel. */
+  readonly bg:    GPURenderPipeline;
+  /** Per-pill proxy pass: instanced 2D quads, heavy refraction shader runs
+   *  only on fragments covered by a proxy (~25 % of screen typically). */
+  readonly proxy: GPURenderPipeline;
+  bindGroups:     [GPUBindGroup, GPUBindGroup];  // index = history read slot (1 - current)
 };
 
 export async function createPipeline(
@@ -31,24 +35,50 @@ export async function createPipeline(
     throw new Error('WGSL shader compile failed — see console for diagnostics');
   }
 
-  const pipeline = device.createRenderPipeline({
-    label: 'dispersion-pipeline',
-    layout: 'auto',
+  const targets: GPUColorTargetState[] = [
+    { format },                 // @location(0) → swapchain
+    { format: 'rgba16float' },  // @location(1) → history (linear)
+  ];
+
+  // Explicit bind group layout so both pipelines share it AND `frame` is
+  // visible to the vertex stage too (vs_proxy reads `frame.pills` and
+  // `frame.resolution`). The `auto` layout derived from the bg pass would
+  // only mark `frame` as fragment-visible, mismatching the proxy pipeline.
+  const bindGroupLayout = device.createBindGroupLayout({
+    label: 'frame-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+    ],
+  });
+  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+
+  // `createRenderPipelineAsync` surfaces validation errors as a rejection,
+  // unlike the sync variant which returns an "invalid" pipeline that only
+  // explodes at setPipeline time.
+  const bg = await device.createRenderPipelineAsync({
+    label: 'bg-pipeline',
+    layout: pipelineLayout,
     vertex:   { module, entryPoint: 'vs_main' },
-    fragment: {
-      module,
-      entryPoint: 'fs_main',
-      targets: [
-        { format },                 // @location(0) → swapchain
-        { format: 'rgba16float' },  // @location(1) → history (linear)
-      ],
-    },
+    fragment: { module, entryPoint: 'fs_bg', targets },
     primitive: { topology: 'triangle-list' },
   });
 
+  const proxy = await device.createRenderPipelineAsync({
+    label: 'proxy-pipeline',
+    layout: pipelineLayout,
+    vertex:   { module, entryPoint: 'vs_proxy' },
+    fragment: { module, entryPoint: 'fs_main', targets },
+    primitive: { topology: 'triangle-list', cullMode: 'none' },
+  });
+
   return {
-    pipeline,
-    bindGroups: buildBindGroups(ctx, pipeline, frameBuf, photo, history),
+    bg,
+    proxy,
+    bindGroups: buildBindGroups(ctx, bg, frameBuf, photo, history),
   };
 }
 
@@ -81,13 +111,14 @@ export function rebuildBindGroups(
   photo: PhotoTex,
   history: History,
 ): void {
-  pl.bindGroups = buildBindGroups(ctx, pl.pipeline, frameBuf, photo, history);
+  pl.bindGroups = buildBindGroups(ctx, pl.bg, frameBuf, photo, history);
 }
 
 export function draw(
   ctx: GpuContext,
   pl: Pipeline,
   history: History,
+  pillCount: number,
   timestampWrites?: GPURenderPassTimestampWrites,
   onCommand?: (encoder: GPUCommandEncoder) => void,
 ): void {
@@ -110,11 +141,17 @@ export function draw(
     ],
     ...(timestampWrites ? { timestampWrites } : {}),
   });
-  pass.setPipeline(pl.pipeline);
+  // Pass 1: fullscreen bg (cheap). Writes every pixel.
+  pass.setPipeline(pl.bg);
   pass.setBindGroup(0, pl.bindGroups[readIndex]);
   pass.draw(3, 1, 0, 0);
+  // Pass 2: per-pill proxy quads (heavy). Covers ~25 % of screen, overrides
+  // bg output for pixels inside the shape's silhouette.
+  if (pillCount > 0) {
+    pass.setPipeline(pl.proxy);
+    pass.draw(6, pillCount, 0, 0);
+  }
   pass.end();
-  // Optional hook for resolving query sets into readback buffers before submit.
   if (onCommand) onCommand(encoder);
   ctx.device.queue.submit([encoder.finish()]);
 }
