@@ -1,11 +1,11 @@
 # Real Refraction
 
 A realtime WebGPU demo of **physically accurate spectral dispersion** through
-Apple "Liquid Glass"-style floating pills. Unlike the common "shift R/G/B IORs"
-hack that most web implementations use (including Three.js's
-`MeshPhysicalMaterial.dispersion`), this samples the full visible spectrum
-per-wavelength and reconstructs the final color via CIE 1931 color matching
-functions.
+Apple "Liquid Glass"-style floating pills, triangular prisms, and rotating
+cubes. Unlike the common "shift R/G/B IORs" hack that most web implementations
+use (including Three.js's `MeshPhysicalMaterial.dispersion`), this samples the
+full visible spectrum per-wavelength and reconstructs the final color via CIE
+1931 color matching functions.
 
 ![Default view](docs/images/demo-default.png)
 
@@ -40,33 +40,59 @@ Requires a WebGPU-capable browser (Chrome / Edge 120+, Safari 18+).
 
 | Input | Action |
 |---|---|
-| Drag a pill | Move it around the canvas |
+| Drag a shape | Move it around the canvas (cube uses a circular hit radius) |
 | **`Z`** (hold) | Force `N = 3` (fake RGB dispersion) for A/B comparison |
 | **Space** | Shuffle pills to random positions |
 | **`R`** | Reload a new random Picsum photo |
-| Tweakpane | Live-adjust IOR, Abbe number, sample count, refraction strength, pill shape, temporal jitter, refraction mode |
+| Tweakpane | IOR, Abbe, sample count, shape (pill / prism / cube), dimensions, refraction strength, projection (ortho / perspective), FOV, temporal jitter, refraction mode |
+| Presets | Subtle pill · Strong dispersion · Prism rainbow · Rotating cube |
+| Materials | 10 real-world glasses (water → BK7 → SF flints → diamond → moissanite) + 4 fantasy (n_d up to 3.5, V_d down to 2) |
+
+Add `?perf=1` to the URL to enable the GPU timestamp HUD — timings are
+published on `window._perf.samples`. Check **Show proxy** in the UI to tint
+every proxy fragment pink and see the rasterised silhouette.
 
 ## Technical approach
 
-- **WebGPU + WGSL.** Single fullscreen fragment pass. Pills are rendered via
-  sphere-traced 3D SDFs — no mesh data.
-- **3D pill SDF.** Two-stage rounded extrusion: stadium silhouette from the top,
-  rounded slab from the side, smooth 3D edges everywhere.
+- **WebGPU + WGSL, two-pass.** Cheap fullscreen bg pass (photo + history)
+  followed by an instanced 3D-cube mesh proxy per pill. The heavy per-pixel
+  refraction shader only runs on fragments inside the proxy silhouette.
+  Back-face culling (CCW-outward 3D → CW NDC after Y-flip) gives exactly one
+  invocation per covered pixel.
+- **3D SDFs, three shapes.** Pill (stadium XY + rounded Z), prism
+  (isosceles triangle in YZ extruded in X), and rotating cube (rounded box +
+  per-frame `rot * (p - center)` via `cubeRotation(time)`). Cube's proxy
+  corners are transformed by `transpose(rot)` so the rasterised silhouette
+  tracks the shader's rotation exactly — no √3 bounding-box slack.
+- **Ortho or perspective projection.** UI toggle. Ortho keeps the flat Liquid
+  Glass aesthetic; perspective uses a pinhole camera at `(w/2, h/2, cameraZ)`
+  with `cameraZ = (height/2) / tan(fov/2)` derived from the user-facing FOV.
 - **Cauchy + Abbe IOR.** Wavelength-dependent index via the glTF
   `KHR_materials_dispersion` formula.
 - **Wyman-Sloan-Shirley CIE XYZ** (JCGT 2013) analytic approximation — no
   lookup tables.
 - **Two-surface refraction.** Front hit via primary sphere-trace, back exit via
-  per-wavelength inside-trace (Exact mode) or shared central-wavelength trace
-  (Approx mode).
+  per-wavelength inside-trace (Exact mode) or shared hero-wavelength trace
+  (Approx mode, Wilkie 2014).
+- **Per-wavelength Fresnel.** Blue λ has higher IOR → higher Schlick Fresnel
+  → visible blue-tinged rim on diamonds and prisms (the classic "fire" of
+  high-index crystals).
 - **Per-wavelength sRGB weighting.** Each sampled photo pixel is weighted by
   `xyzToSrgb(cmf(λ))` — short-wavelength samples contribute to blue, long to
   red. This preserves photo color when refraction UVs coincide and produces
   real chromatic fringing where they diverge.
-- **Temporal jitter.** Per-frame wavelength offset blended through a
-  `rgba16float` ping-pong history texture (α = 0.2) — effective samples ~2-3× N.
-- **Fresnel (Schlick) + cheap mirror reflection** for the glass look.
+- **Spatial + temporal jitter.** Per-pixel wavelength phase via `hash21` so
+  neighbouring pixels sample different λ — the eye and history accumulation
+  average the noise, so N=8 stratified looks like N=16 uniform.
+- **TIR fallback.** When `refract()` returns zero at the back face, the
+  wavelength contributes the external reflection instead of dropping — no
+  black holes inside the cube.
+- **Temporal accumulation.** `rgba16float` ping-pong history with EMA blend
+  (α = 0.2 steady-state, 1.0 for one frame after a scene change so cube
+  tail doesn't ghost in).
 - **sRGB OETF** applied manually when the swapchain format is non-sRGB.
+- **localStorage persistence.** Validated load (rejects NaN / bogus enums),
+  trailing-edge debounced save, pagehide flush.
 
 ## Project structure
 
@@ -87,7 +113,8 @@ src/
 ├── webgpu/
 │   ├── device.ts               Adapter + device + error handlers
 │   ├── history.ts              Ping-pong history textures
-│   ├── pipeline.ts             Render pipeline + pre-built bind groups
+│   ├── pipeline.ts             Bg + proxy pipelines + shared bind groups
+│   ├── perf.ts                 GPU timestamp harness (?perf=1)
 │   └── uniforms.ts             Typed uniform buffer writer
 └── shaders/
     ├── fullscreen.wgsl         Fullscreen triangle vertex shader
@@ -104,7 +131,24 @@ implementation for the shader.
 
 ## Design
 
-- [Architecture notes](docs/ARCHITECTURE.md) — module map, frame path, uniform layout, per-wavelength weighting rationale, TIR fallback, SDF details for pill / prism / cube
+- [Architecture notes](docs/ARCHITECTURE.md) — module map, frame path, uniform layout, proxy mesh + camera, per-wavelength loop (spatial stratification, per-λ Fresnel, TIR fallback), measured performance
+
+## Performance
+
+Apple Silicon (1132×1046, WebGPU `timestamp-query`):
+
+| Config | GPU time |
+|---|---:|
+| pill N=8  | 1.40 ms |
+| pill N=32 | 6.70 ms |
+| cube N=8  | 2.08 ms |
+| cube N=32 | 9.64 ms |
+| cube N=64 | 11.49 ms |
+
+All within the 16.67 ms vsync budget. Background pixels cost ~nothing; the
+per-λ loop dominates on pill / prism / cube pixels. Apple's TBDR already
+culls background efficiently, but discrete GPUs gain more from the proxy
+pass.
 
 ## References
 
