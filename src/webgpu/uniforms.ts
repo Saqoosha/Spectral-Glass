@@ -18,7 +18,7 @@ export type FrameParams = {
   readonly heroLambda:         number;  // [380, 700] — jittered each frame; drives hero-wavelength back-face trace
   readonly cameraZ:            number;  // distance from screen plane (z=0) to the camera, in pixels
   readonly projection:         number;  // 0 = orthographic, 1 = perspective
-  readonly debugProxy:         number;  // 1 = tint proxy fragments pink for debugging
+  readonly debugProxy:         boolean; // tint proxy fragments pink for debugging
   readonly pills:              readonly Pill[];
 };
 
@@ -34,7 +34,7 @@ const PILL_FLOATS = 8;                                 // 32 B per pill
 const TOTAL_FLOATS = HEAD_FLOATS + PILL_FLOATS * MAX_PILLS;
 const TOTAL_BYTES  = TOTAL_FLOATS * 4;
 
-// Reused across frames so we don't allocate a 320-byte Float32Array every tick.
+// Reused across frames so we don't allocate a 336-byte Float32Array every tick.
 const scratch = new Float32Array(TOTAL_FLOATS);
 
 export function createFrameBuffer(device: GPUDevice): GPUBuffer {
@@ -69,7 +69,7 @@ export function writeFrame(device: GPUDevice, buf: GPUBuffer, p: FrameParams): v
 
   scratch[16] = p.cameraZ;
   scratch[17] = p.projection;
-  scratch[18] = p.debugProxy;
+  scratch[18] = p.debugProxy ? 1 : 0;
   // [19] padding (zeroed by scratch.fill above)
 
   const pillCount = Math.min(p.pills.length, MAX_PILLS);

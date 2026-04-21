@@ -27,11 +27,19 @@ export async function initGpu(
   );
   const hasTimestamp = device.features.has('timestamp-query');
 
-  // Surface GPU errors we'd otherwise miss entirely — browsers auto-log uncaptured
-  // validation errors to devtools but don't notify the page.
+  // Surface GPU errors we'd otherwise miss entirely — browsers auto-log
+  // uncaptured validation errors to devtools but don't notify the page. First
+  // error escalates to `onFatal` so the user sees *something* instead of
+  // just a silently broken frame loop; subsequent errors only log (to avoid
+  // an error storm overwriting the fallback UI).
+  let firstUncaptured = true;
   device.addEventListener('uncapturederror', (ev) => {
     const err = (ev as GPUUncapturedErrorEvent).error;
-    console.error('[webgpu] uncaptured error:', err.message);
+    console.error('[webgpu] uncaptured error:', err);
+    if (firstUncaptured) {
+      firstUncaptured = false;
+      onFatal(`GPU validation error: ${err.message}. Please reload the page.`);
+    }
   });
   device.lost.then((info) => {
     console.error('[webgpu] device lost:', info.reason, info.message);

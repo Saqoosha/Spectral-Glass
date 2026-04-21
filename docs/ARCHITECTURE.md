@@ -12,7 +12,7 @@ refraction shader only runs on fragments the proxy actually covers.
 │                                                                      │
 │  1. resize canvas + history if needed                                │
 │  2. push params → pills (hx/hy/hz/edgeR)                             │
-│  3. writeFrame → uniform buffer (400 B: scalars + MAX_PILLS × 32 B) │
+│  3. writeFrame → uniform buffer (336 B: scalars + MAX_PILLS × 32 B) │
 │  4. draw pass:                                                       │
 │     a. bg sub-pass: fullscreen triangle → fs_bg (photo + history)    │
 │     b. proxy sub-pass: instanced 3D cube mesh → fs_main              │
@@ -88,7 +88,8 @@ offset 80  │ pills[0..8]   each pill is:                         (32 B each)
            │   center.xyz, edgeR,   halfSize.xyz, _pad
 ```
 
-Total 400 bytes. Uniform size is fixed — pills beyond `pillCount` are zeros.
+Total 336 bytes (80 B head + 8 × 32 B pills). Uniform size is fixed — pills
+beyond `pillCount` are zeros.
 
 - `shape` selects the SDF (0=pill, 1=prism, 2=cube).
 - `time` drives cube rotation.

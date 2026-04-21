@@ -7,8 +7,10 @@ import fsSrc from '../shaders/dispersion.wgsl?raw';
 export type Pipeline = {
   /** Fullscreen bg pass: cheap photo+history blend, covers every pixel. */
   readonly bg:    GPURenderPipeline;
-  /** Per-pill proxy pass: instanced 2D quads, heavy refraction shader runs
-   *  only on fragments covered by a proxy (~25 % of screen typically). */
+  /** Per-pill proxy pass: instanced 3D cube mesh (12 tris, 36 verts),
+   *  optionally rotated for shape==cube. The heavy refraction shader runs
+   *  only on fragments inside the proxy silhouette — for the default 4-pill
+   *  layout that's ~25 % of screen; scales with on-screen shape area. */
   readonly proxy: GPURenderPipeline;
   bindGroups:     [GPUBindGroup, GPUBindGroup];  // index = history read slot (1 - current)
 };
@@ -152,11 +154,13 @@ export function draw(
   pass.setPipeline(pl.bg);
   pass.setBindGroup(0, pl.bindGroups[readIndex]);
   pass.draw(3, 1, 0, 0);
-  // Pass 2: per-pill proxy quads (heavy). Covers ~25 % of screen, overrides
-  // bg output for pixels inside the shape's silhouette.
+  // Pass 2: per-pill 3D cube proxy meshes (heavy). Covers only the actual
+  // on-screen shape silhouette — for the default 4-pill layout that's ~25 %,
+  // scales with shape size. Reuses the bind group set before the bg pass
+  // because both pipelines share `pipelineLayout`.
   if (pillCount > 0) {
     pass.setPipeline(pl.proxy);
-    pass.draw(36, pillCount, 0, 0);  // 36 verts = 12 triangles per cube proxy
+    pass.draw(36, pillCount, 0, 0);
   }
   pass.end();
   if (onCommand) onCommand(encoder);

@@ -1,4 +1,4 @@
-import type { Params } from './ui';
+import { FOV_MIN, FOV_MAX, type Params } from './ui';
 import type { Pill } from './pills';
 
 const KEY     = 'realrefraction:config';
@@ -33,7 +33,7 @@ function validateParams(u: unknown): Partial<Params> {
   if (typeof p.shape          === 'string' && SHAPES.has(p.shape as Params['shape']))                 out.shape          = p.shape as Params['shape'];
   if (typeof p.refractionMode === 'string' && MODES.has(p.refractionMode as Params['refractionMode'])) out.refractionMode = p.refractionMode as Params['refractionMode'];
   if (typeof p.projection     === 'string' && PROJECTIONS.has(p.projection as Params['projection']))   out.projection     = p.projection as Params['projection'];
-  if (isFiniteNumber(p.fov))                out.fov                = p.fov;
+  if (isFiniteNumber(p.fov))                out.fov                = Math.min(Math.max(p.fov, FOV_MIN), FOV_MAX);
   if (isFiniteNumber(p.sampleCount) && SAMPLE_COUNTS.has(p.sampleCount as Params['sampleCount']))      out.sampleCount    = p.sampleCount as Params['sampleCount'];
   if (isFiniteNumber(p.n_d))                out.n_d                = p.n_d;
   if (isFiniteNumber(p.V_d))                out.V_d                = p.V_d;

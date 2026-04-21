@@ -5,6 +5,7 @@ import { createPerf } from './webgpu/perf';
 import { loadPhoto, destroyPhoto } from './photo';
 import { attachDrag, defaultPills, type Pill } from './pills';
 import { defaultParams, initUi, mergeParams, type Params } from './ui';
+import { cameraZForFov } from './math/camera';
 import { createHistory, resizeHistory } from './webgpu/history';
 import { loadStored, debouncedSaver } from './persistence';
 
@@ -29,6 +30,21 @@ const SHAPE_ID: Record<Params['shape'], number> = {
   prism: 1,
   cube:  2,
 };
+
+// Must match the WGSL `projection` uniform branches (0 = ortho, 1 = perspective).
+const PROJECTION_ID: Record<Params['projection'], number> = {
+  ortho:       0,
+  perspective: 1,
+};
+
+/** Non-fatal user-visible notice — e.g. photo reload failed. Auto-hides. */
+function showNotice(message: string, durationMs = 3000): void {
+  const fb = document.getElementById('fallback');
+  if (!fb) return;
+  fb.textContent = message;
+  fb.classList.add('visible');
+  window.setTimeout(() => fb.classList.remove('visible'), durationMs);
+}
 
 async function main(): Promise<void> {
   const init = await initGpu('gpu', showFatal);
@@ -80,9 +96,12 @@ async function main(): Promise<void> {
       rebuildBindGroups(ctx, pl, frameBuf, photoNow, history);
       markSceneChanged();
       // Hold off the destroy until pending GPU work referencing `old` has drained.
-      ctx.device.queue.onSubmittedWorkDone().then(() => destroyPhoto(old));
+      ctx.device.queue.onSubmittedWorkDone()
+        .then(() => destroyPhoto(old))
+        .catch((err) => console.error('[photo] queue drain failed, skipping destroy:', err));
     } catch (err) {
       console.error('[photo] reload failed:', err);
+      showNotice(`Photo reload failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
   initUi(params, () => { void reloadPhoto(); }, persist, markSceneChanged);
@@ -171,9 +190,8 @@ async function main(): Promise<void> {
       const heroLambda = 380 + Math.random() * 320;
       // cameraZ sets the ortho depth AND implicitly the perspective FOV — for
       // a full FOV of `fov` degrees to fit the canvas height, the camera must
-      // sit at `(height/2) / tan(fov/2)` pixels above the z=0 plane.
-      const fovRad  = params.fov * (Math.PI / 180);
-      const cameraZ = (height * 0.5) / Math.tan(fovRad * 0.5);
+      // sit at `cameraZForFov(fov, height)` pixels above the z=0 plane.
+      const cameraZ = cameraZForFov(params.fov, height);
       writeFrame(ctx.device, frameBuf, {
         resolution:         [width, height],
         photoSize:          [photoNow.width, photoNow.height],
@@ -189,8 +207,8 @@ async function main(): Promise<void> {
         historyBlend,
         heroLambda,
         cameraZ,
-        projection:         params.projection === 'perspective' ? 1 : 0,
-        debugProxy:         params.debugProxy ? 1 : 0,
+        projection:         PROJECTION_ID[params.projection],
+        debugProxy:         params.debugProxy,
         pills,
       });
 

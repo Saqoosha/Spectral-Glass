@@ -1,5 +1,11 @@
 import { Pane } from 'tweakpane';
 
+/** Perspective FOV slider / persistence bounds, in degrees.
+ *  Anything outside the range drives `cameraZ = (height/2) / tan(fov/2)` into
+ *  ±Infinity / 0, which blows up the projection math. */
+export const FOV_MIN = 20;
+export const FOV_MAX = 120;
+
 export type Params = {
   sampleCount: 3 | 8 | 16 | 32 | 64;
   shape: 'pill' | 'prism' | 'cube';
@@ -151,7 +157,7 @@ export function initUi(
   misc.addBinding(params, 'projection', {
     options: { Orthographic: 'ortho', Perspective: 'perspective' },
   });
-  misc.addBinding(params, 'fov', { min: 20, max: 120, step: 1, label: 'FOV°' });
+  misc.addBinding(params, 'fov', { min: FOV_MIN, max: FOV_MAX, step: 1, label: 'FOV°' });
   misc.addBinding(params, 'debugProxy', { label: 'Show proxy' });
 
   const presets = pane.addFolder({ title: 'Presets' });

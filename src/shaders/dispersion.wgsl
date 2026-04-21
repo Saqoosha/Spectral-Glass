@@ -285,11 +285,12 @@ const CUBE_VERTS: array<vec3<f32>, 36> = array<vec3<f32>, 36>(
 );
 
 // Perspective projection: a world point `p` seen through a pinhole camera at
-// `(cx, cy, cz)` looking down -Z, with the z=0 plane mapping to the screen
-// exactly 1:1 in world pixels. A point at the screen plane projects to its own
-// (x, y). A point closer to the camera than z=0 projects outward; a point
-// beyond z=0 projects inward. Returns NDC (x in [-1,1], y in [-1,1] with DOM
-// top = +1) and a clip-W equal to depth-from-camera (positive for in-front).
+// `(cx, cy, cameraZ)` looking down -Z, with the z=0 plane mapping to the
+// screen exactly 1:1 in world pixels. A point at the screen plane projects to
+// its own (x, y). A point closer to the camera than z=0 projects outward; a
+// point beyond z=0 projects inward. The perspective divide is applied here in
+// xy (not by the rasterizer), so the return always has w=1 for in-front
+// vertices; w=-1 is used as a near-plane sentinel that the rasterizer clips.
 fn projectWorld(p: vec3<f32>) -> vec4<f32> {
   let persp = frame.projection > 0.5;
   let camXY = frame.resolution * 0.5;
@@ -297,9 +298,11 @@ fn projectWorld(p: vec3<f32>) -> vec4<f32> {
   var uv: vec2<f32>;
   if (persp) {
     let dz = frame.cameraZ - p.z;
-    // Bail out when the vertex is behind the camera — degenerate clip vector
-    // that fails the rasterizer's front-of-camera cull.
-    if (dz <= 1.0) {
+    // `dz <= 0` means the vertex is at or behind the camera. Return w=-1 so
+    // WebGPU's near-plane clipper drops the vertex; legitimate front-facing
+    // vertices with tiny-but-positive dz still rasterize (threshold used to
+    // be 1.0 which incorrectly clipped near-camera proxy corners at wide FOV).
+    if (dz <= 0.0) {
       return vec4<f32>(0.0, 0.0, 0.0, -1.0);
     }
     uv = (p.xy - camXY) * (frame.cameraZ / dz) + camXY;
@@ -395,9 +398,13 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     if (frame.debugProxy > 0.5) {
       bgFinal = mix(bg, vec3<f32>(1.0, 0.3, 0.7), 0.5);
     }
+    // Same EMA blend as both fs_bg and the hit path — skipping it here would
+    // leave a 1-frame temporal discontinuity along the proxy-over-cover halo.
+    let prevMiss  = textureSampleLevel(historyTex, historySmp, uv, 0.0).rgb;
+    let blendMiss = mix(prevMiss, bgFinal, frame.historyBlend);
     var bgOut: FsOut;
-    bgOut.color   = vec4<f32>(encodeDisplay(bgFinal), 1.0);
-    bgOut.history = vec4<f32>(bgFinal, 1.0);
+    bgOut.color   = vec4<f32>(encodeDisplay(blendMiss), 1.0);
+    bgOut.history = vec4<f32>(blendMiss, 1.0);
     return bgOut;
   }
 
@@ -441,8 +448,9 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   // adjacent pixels sample DIFFERENT λ. The eye (and post-process history
   // accumulation) averages the spatial noise, so the rainbow looks smooth at
   // a given N — effectively 2-4× more samples worth of quality for free.
-  // `jitter` (frame counter) breaks temporal coherence so history accumulates
-  // new choices each frame instead of locking onto one stratum.
+  // `jitter` is a per-frame random offset (host-side Math.random()/N); using
+  // it as part of the hash seed decorrelates the stratum choice across
+  // frames so history accumulates new samples instead of locking on.
   let pxJit = hash21(px + vec2<f32>(jitter * 1000.0, frame.time * 37.0));
 
   // For each wavelength λ:
