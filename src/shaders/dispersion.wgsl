@@ -1072,22 +1072,29 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     //   2. NaN r2 — happens when nBack came out NaN-ish from a corner-case
     //      back exit. WGSL's `<` against NaN is always false, so we add an
     //      explicit `r2dot != r2dot` self-comparison to catch it.
-    //   3. The refracted UV would land outside the photo. The sampler is
-    //      mirror-repeat (see photo.ts — chosen so legit reflection /
-    //      strong-refraction samples don't show edge-clamp smears), but
-    //      that means an erroneous UV mirrors back into the photo at a
-    //      visually unrelated location: bright photo region → white
-    //      speckle, dark region → black speckle. Detecting this BEFORE
-    //      the sample and falling back to reflSrc keeps the edge clean.
-    // For all three the external reflection sample is the visually-closest
-    // valid colour at a grazing/degenerate hit anyway.
+    //   3. The refracted UV would land outside the photo's [0, 1] range.
+    //      The sampler is mirror-repeat (see photo.ts), so a wildly-off
+    //      UV folds back to an unrelated photo region: bright photo
+    //      content there → white speckle, dark there → black.
+    //
+    // For #2 and #3 we substitute the LOCAL bg sample (the photo at this
+    // fragment's own pixel position) — that's the same colour the miss
+    // path / silhouette neighbours render, so the bad pixel blends into
+    // the surrounding silhouette instead of sticking out as either a
+    // bright reflection sample or a wrong-photo-region speckle. For real
+    // TIR (#1) we still use the external reflection because it's the
+    // physically-correct response, even if it can be visually noisy.
     let uvOff       = screenUvFromWorld(pExit.xy) + r2.xy * strength;
     let uvCover     = coverUv(uvOff);
     let uvInBounds  = all(uvCover >= vec2<f32>(0.0)) && all(uvCover <= vec2<f32>(1.0));
     let r2dot       = dot(r2, r2);
-    let r2bad       = r2dot < 1e-4 || r2dot != r2dot || !uvInBounds;
-    if (r2bad) {
+    let r2NaN       = r2dot != r2dot;
+    let r2TIR       = r2dot < 1e-4 && !r2NaN;
+    let r2OOB       = !uvInBounds;
+    if (r2TIR) {
       refractL = reflSrc;
+    } else if (r2NaN || r2OOB) {
+      refractL = bg;
     } else {
       refractL = textureSampleLevel(photoTex, photoSmp, uvCover, 0.0).rgb;
     }
@@ -1124,7 +1131,21 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   let isNaN  = raw != raw;
   let isHuge = raw > vec3<f32>(8.0);
   let safe   = select(raw, bg, isNaN | isHuge);
-  let outRgb = clamp(safe, vec3<f32>(0.0), vec3<f32>(8.0));
+  let clamped = clamp(safe, vec3<f32>(0.0), vec3<f32>(8.0));
+
+  // Silhouette anti-alias by blending toward bg at near-grazing angles.
+  // Without this, the rasterised proxy edge produces a 1-pixel binary
+  // hit/miss boundary; the hit side has wildly view-dependent refraction
+  // (the per-wavelength loop's UV samples are extreme at cosT → 0 and
+  // even legitimate TIR fallbacks to reflSrc can be uncorrelated with
+  // the miss side's plain bg). With TAA off we have no temporal averaging
+  // to dilute the discontinuity, so the silhouette flickers as a hard
+  // pixel-wide colour jump. Mixing toward the local bg over a small
+  // grazing-angle band (cosT < 0.15) tapers the edge into a soft
+  // transition that matches the surrounding bg path output. Doesn't
+  // affect interior pixels where cosT is nowhere near zero.
+  let silhouetteMix = smoothstep(0.0, 0.15, cosT);
+  let outRgb = mix(bg, clamped, silhouetteMix);
 
   // History is stored in rgba16float (linear). Blend in linear space; encode
   // for display only on the swapchain write. `historyBlend` is normally 0.2 —
