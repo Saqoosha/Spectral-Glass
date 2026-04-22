@@ -223,11 +223,30 @@ fn maxInternalPath() -> f32 {
 
 fn sceneNormal(p: vec3<f32>) -> vec3<f32> {
   let e = vec2<f32>(HIT_EPS, 0.0);
-  return normalize(vec3<f32>(
+  let g = vec3<f32>(
     sceneSdf(p + e.xyy) - sceneSdf(p - e.xyy),
     sceneSdf(p + e.yxy) - sceneSdf(p - e.yxy),
     sceneSdf(p + e.yyx) - sceneSdf(p - e.yyx),
-  ));
+  );
+  // Degenerate-gradient guard. At a silhouette / wave crest the six finite-
+  // diff probes can land on near-equal SDF values (e.g. a wavy plate hit
+  // exactly at the apex of a bump where ∇sdf is tangent to the view ray),
+  // making `g` near-zero. `normalize(0)` returns NaN, which then cascades:
+  //   refract(rd, NaN, eta) → all-NaN r1
+  //   dot(r1, r1) < 1e-4 compares NaN < 1e-4 → false → continue is NOT taken
+  //   the NaN flows through inside-trace, photo sample, CMF normalise
+  //   final outRgb is NaN or huge → written to history → permanent white /
+  //   black pixel that survives every subsequent EMA blend.
+  // Visible specifically when TAA is off: with the ray frozen at the pixel
+  // centre every frame, the same degenerate hit re-fires forever; with TAA
+  // jitter the ±0.5 px sub-pixel offset usually misses the singular point.
+  // Fall back to a camera-facing +Z normal so the pixel renders as a flat
+  // refraction (slightly wrong direction at most) instead of NaN garbage.
+  let len2 = dot(g, g);
+  if (len2 < 1e-8) {
+    return vec3<f32>(0.0, 0.0, 1.0);
+  }
+  return g * inverseSqrt(len2);
 }
 
 // ---------- tracing ----------
@@ -1012,8 +1031,20 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   }
 
   // Normalize against the per-wavelength primary sum — keeps a flat white
-  // spectrum neutral for any N.
-  let outRgb = max(rgbAccum / max(rgbWeight, vec3<f32>(1e-4)), vec3<f32>(0.0));
+  // spectrum neutral for any N. Then sanitize: if every wavelength entered
+  // the loop's `continue` branch (TIR-on-entry — shouldn't happen with the
+  // 1.0-clamped IOR but defensively guarded), `rgbWeight` is exactly 0 and
+  // `max(_, 1e-4)` saves the divide but the result can spike to absurdly
+  // large values from tiny `rgbAccum` jitter; downstream that becomes a
+  // saturated white pixel. NaN can also slip in if `nFront` was degenerate
+  // (sceneNormal's guard catches the worst case but float underflow on
+  // very tangent gradients can still make refract() emit NaN). Both
+  // failure modes burn into history if not caught here — a single NaN
+  // sample turns the EMA into NaN every subsequent frame at that pixel
+  // until a scene-change reset.
+  let raw  = rgbAccum / max(rgbWeight, vec3<f32>(1e-4));
+  let safe = select(raw, vec3<f32>(0.0), raw != raw);  // NaN → 0
+  let outRgb = clamp(safe, vec3<f32>(0.0), vec3<f32>(8.0));
 
   // History is stored in rgba16float (linear). Blend in linear space; encode
   // for display only on the swapchain write. `historyBlend` is normally 0.2 —
