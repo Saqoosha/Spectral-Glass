@@ -7,13 +7,18 @@ use (including Three.js's `MeshPhysicalMaterial.dispersion`), this samples the
 full visible spectrum per-wavelength and reconstructs the final color via CIE
 1931 color matching functions.
 
-![Default view](docs/images/demo-default.png)
+![Cubes over a railway](docs/images/demo-default.png)
 
-Above: four glass pills over a Picsum landscape. Subtle chromatic fringing is
-visible at the rounded rim. Below: same scene with `V_d = 18` and refraction
-strength `0.3`, where the per-wavelength offset is dramatic:
+Above: four rotating glass cubes (Rainbow soap material, `n_d = 1.272`,
+`V_d = 1.5`, perspective FOV 46°, N = 32) over a Picsum landscape. The
+yellow → cyan dispersion bands are the same per-wavelength refraction the
+shader does in real time at 60 fps.
 
-![Strong dispersion](docs/images/demo-strong-dispersion.png)
+Below: minimal version against a clean sky — the rainbow rim on each cube is
+the per-λ Schlick Fresnel mixing the refracted color with the front-face
+reflection.
+
+![Cubes over desert hills](docs/images/demo-strong-dispersion.png)
 
 ## Why not just shift R/G/B?
 
