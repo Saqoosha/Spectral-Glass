@@ -439,6 +439,37 @@ fn cubeAnalyticExit(roWorld: vec3<f32>, rdWorld: vec3<f32>, pillIdx: u32) -> Cub
   return CubeExit(pWorld, -nOut);
 }
 
+// Crease detector for plate hits. Returns true when the hit point lies on a
+// face junction — typically where the wavy front Z-face meets a flat side
+// X- or Y-face at the plate's XY rim. At those crease pixels the surface
+// normal is mathematically undefined: the finite-diff `sceneNormal` returns
+// a non-zero "average" of the two adjacent face normals, but the resulting
+// refraction direction is meaningless and lands the photo sample at an
+// uncorrelated pixel — visible as a single-pixel speckle along the rim
+// when TAA isn't averaging across sub-pixel positions.
+//
+// Detection: compute the plate's local-frame `q = abs(pShift) - h` (same
+// expression sdfWavyPlate uses internally). Each component of `q` is
+// negative inside the slab, zero on the slab's face, positive outside.
+// If two or more components are within HIT_EPS of zero simultaneously, the
+// hit point sits on the intersection of two faces — a crease. Caller
+// routes those pixels through the bg fallback so they blend cleanly with
+// the surrounding silhouette.
+fn plateCreaseAt(hitWorld: vec3<f32>, pillIdx: u32) -> bool {
+  let pill = frame.pills[pillIdx];
+  let p    = frame.plateRot * (hitWorld - pill.center);
+  let h    = vec3<f32>(pill.halfSize.x, pill.halfSize.x, pill.halfSize.z);
+  let st   = frame.sceneTime;
+  let waveZ  = frame.waveAmp * sin(frame.waveFreq * p.x + st * 2.0)
+                              * sin(frame.waveFreq * p.y + st * 2.0);
+  let pShift = vec3<f32>(p.x, p.y, p.z - waveZ);
+  let q      = abs(pShift) - h;
+  let nearX  = i32(abs(q.x) < HIT_EPS);
+  let nearY  = i32(abs(q.y) < HIT_EPS);
+  let nearZ  = i32(abs(q.z) < HIT_EPS);
+  return (nearX + nearY + nearZ) >= 2;
+}
+
 // Same idea as hitCubePillIdx but for plates. Picks the plate whose surface
 // is closest (by absolute SDF) to the front-hit point, so `plateAnalyticExit`
 // operates on the plate we actually hit even when multiple plates overlap.
@@ -889,6 +920,22 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   let h    = sphereTrace(ro, rd, maxT);
   let bg   = textureSampleLevel(photoTex, photoSmp, coverUv(uv), 0.0).rgb;
 
+  // Shape-dispatch + analytic-exit pill index are needed BOTH for the
+  // bg-fallback gate (plate crease detection runs against the hit pill's
+  // SDF components) and for the wavelength loop further down. Compute
+  // once up front; the cube/plate idx scan is gated on a hit existing.
+  let shapeId  = i32(frame.shape + 0.5);
+  let isCube   = shapeId == 2;
+  let isPlate  = shapeId == 3;
+  let hasAnalyticExit = isCube || isPlate;
+
+  var analyticIdx: u32 = 0u;
+  if (h.ok && isCube) {
+    analyticIdx = hitCubePillIdx(h.p);
+  } else if (h.ok && isPlate) {
+    analyticIdx = hitPlatePillIdx(h.p);
+  }
+
   // Compute front normal up front so we can route degenerate-gradient hits
   // through the same bg fallback path as misses. `sceneNormal` returns the
   // zero vector when the gradient is too small to normalise (silhouette /
@@ -898,14 +945,18 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   // Treating it as bg blends seamlessly with the silhouette neighbourhood.
   let nFront        = select(vec3<f32>(0.0), sceneNormal(h.p), h.ok);
   let normalIsValid = dot(nFront, nFront) > 0.5;
+  // Plate-only crease test: the hit point sits on the intersection of two
+  // faces (e.g. front Z meets a side X / Y face at the plate's XY rim).
+  // Normal is mathematically undefined there; finite-diff returns a non-
+  // zero average that produces a meaningless refraction. Same bg fallback
+  // as misses keeps the rim clean.
+  let atCrease = h.ok && isPlate && plateCreaseAt(h.p, analyticIdx);
 
-  if (!h.ok || !normalIsValid) {
-    // Proxy covered this pixel but no usable surface was reached — either
-    // the sphere-trace overshot the actual shape (proxy over-cover) or the
-    // hit landed on a finite-diff-degenerate point. Either way, render as
+  if (!h.ok || !normalIsValid || atCrease) {
+    // Proxy covered this pixel but no usable surface was reached — miss,
+    // degenerate-normal hit, or a plate crease. Either way, render as
     // background. In debug mode, tint these MORE pinkly so the
-    // over-coverage "halo" around the silhouette is visible. In normal mode,
-    // fall through to the bg color.
+    // over-coverage "halo" around the silhouette is visible.
     var bgFinal = bg;
     if (frame.debugProxy > 0.5) {
       bgFinal = mix(bg, vec3<f32>(1.0, 0.3, 0.7), 0.5);
@@ -926,26 +977,10 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   let strength = frame.refractionStrength;
   let jitter   = frame.jitter;
   let useHero  = frame.refractionMode > 0.5;
-  let shapeId  = i32(frame.shape + 0.5);
-  let isCube   = shapeId == 2;
-  let isPlate  = shapeId == 3;
-  let hasAnalyticExit = isCube || isPlate;
 
   // Cap the inside-trace at the longest possible chord through the largest
   // pill in the scene. Thick configurations would otherwise bail out mid-body.
   let internalMax = maxInternalPath();
-
-  // Pill the front hit belongs to. Only used for the analytical cube / plate
-  // paths — pill/prism keep sphere-tracing the whole scene. Picked by per-pill
-  // SDF minimum at the hit point so overlapping shapes still resolve
-  // correctly. Gated on `hasAnalyticExit` so the non-analytic shapes don't pay
-  // the per-pill SDF scan.
-  var analyticIdx: u32 = 0u;
-  if (isCube) {
-    analyticIdx = hitCubePillIdx(h.p);
-  } else if (isPlate) {
-    analyticIdx = hitPlatePillIdx(h.p);
-  }
 
   // Hero mode: one back-face trace at a PER-FRAME-RANDOMIZED wavelength
   // (Wilkie 2014). Unlike plain "approx" fixed at 540 nm, the randomization +
