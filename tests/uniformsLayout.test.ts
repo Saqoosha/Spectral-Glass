@@ -7,10 +7,13 @@ import { dirname, resolve } from 'node:path';
 //
 // uniforms.ts and dispersion.wgsl declare the same struct twice. WebGPU won't
 // catch a host/shader mismatch — it just reads garbled bytes. Even a strict
-// integration test would need a real GPU device. The compromise: pin the host
-// constants here and verify the WGSL declares the matching field set in the
-// matching order. If anyone reorders or adds a Frame field, at least one of
-// the regex assertions below will trip and tell them to revisit uniforms.ts.
+// integration test would need a real GPU device. The compromise: pin the
+// expected Frame field list here. The host side (uniforms.ts) is designed to
+// mirror this list field-for-field; any WGSL change that adds, removes, or
+// reorders a field will trip an assertion below and prompt a review of
+// `HEAD_FLOATS` / `CUBE_ROT_FLOATS` / `pillBase` in uniforms.ts. The reverse
+// (someone changing those host constants without touching WGSL) is NOT caught
+// here — that would still produce silent uniform corruption on the GPU.
 
 const here   = dirname(fileURLToPath(import.meta.url));
 const wgsl   = readFileSync(resolve(here, '../src/shaders/dispersion.wgsl'), 'utf8');
@@ -38,7 +41,17 @@ function declaredFields(body: string): { name: string; type: string }[] {
     if (colon < 0) continue;
     const name = stripped.slice(0, colon).trim();
     const type = stripped.slice(colon + 1).trim();
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !type) continue;
+    // Hard-fail rather than silently skip — a malformed line means the parser
+    // would otherwise drop a field and let drift sneak through. If somebody
+    // splits a declaration across lines (e.g. `name:\n  type,`), the resulting
+    // empty halves trip these throws and force the parser to be revisited
+    // alongside the WGSL change.
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new Error(`Frame field has malformed name: ${JSON.stringify(raw)}`);
+    }
+    if (!type) {
+      throw new Error(`Frame field has empty type for "${name}": ${JSON.stringify(raw)}`);
+    }
     out.push({ name, type });
   }
   return out;
@@ -62,7 +75,7 @@ describe('uniform layout drift detector', () => {
     ]);
   });
 
-  it('cubeRot sits at the offset uniforms.ts writes via scratch.set', () => {
+  it('cubeRot is still mat3x3<f32> (matches CUBE_ROT_FLOATS=12 / 48 B)', () => {
     // If the field order changes, the previous test fires first. This pins the
     // type so a swap to e.g. mat4x4 (which is 64 B, not 48) trips a separate
     // failure — it would otherwise pass the order test but corrupt pills.

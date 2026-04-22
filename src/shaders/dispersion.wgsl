@@ -33,10 +33,13 @@ struct Frame {
   // src/math/cube.ts). Uploaded as a uniform so every cube SDF evaluation is
   // just one mat-vec instead of four cos/sin. With cubeAnalyticExit replacing
   // the per-wavelength inside-trace, the cube path's remaining sdfCube traffic
-  // is sphereTrace (up to 64 iters) + the front sceneNormal (6 evals) +
-  // hitCubePillIdx (one eval per pill), all multiplied by pillCount inside
-  // sceneSdf — roughly 70 × pillCount cos/sin pairs saved per fragment per
-  // frame. cubeAnalyticExit itself uses cubeRot twice more directly.
+  // is sphereTrace (up to 64 iters) + the front sceneNormal (6 evals), each
+  // going through sceneSdf which scans all live pills, plus a per-pill scan
+  // inside hitCubePillIdx — sdfCube evaluations still total roughly 70 ×
+  // pillCount per fragment, so that many cos/sin pairs are saved per frame.
+  // cubeAnalyticExit also uses cubeRot a few more times directly (two forward
+  // multiplies, one transpose, two inverse multiplies — all from the same
+  // uniform, no extra cos/sin).
   cubeRot:            mat3x3<f32>,
   pills:              array<PillGpu, MAX_PILLS>,
 };
@@ -554,8 +557,10 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     // Entry TIR — leave sharedExit / sharedNBack at their defaults
     // (h.p, -nFront) so the wavelength loop falls through to the reflection
     // path via Fresnel. Practically this can't fire today (cauchyIor clamps
-    // ior >= 1.0 and the entry is vacuum→glass), but `cubeAnalyticExit` would
-    // produce NaN exits if r1hero ≈ 0 reached it.
+    // ior >= 1.0 and the entry is vacuum→glass), but both back-trace branches
+    // would misbehave with r1hero ≈ 0: cubeAnalyticExit divides by rdL and
+    // would emit NaN, insideTrace would stall at the entry point with no
+    // forward progress.
     if (dot(r1hero, r1hero) >= 1e-4) {
       if (isCube) {
         let ex = cubeAnalyticExit(h.p, r1hero, cubeIdx);

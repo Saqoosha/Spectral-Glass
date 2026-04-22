@@ -228,7 +228,7 @@ each new case, see `bun run test`):
 - `sdfCube` interior, far-field, face zero-crossings, symmetry, rounded-corner smoothness.
 - `cameraZForFov` at 60°/90°, monotonicity with FOV, linearity with height, slider bounds.
 - `cubeRotationColumns` identity at t=0, orthonormality, matches the original rz·rx derivation, WGSL padded layout, pad slots zero, rejects non-finite time.
-- `tests/uniformsLayout.test.ts` parses the WGSL `struct Frame` declaration and pins the field set + order so anyone editing it gets nudged to update `src/webgpu/uniforms.ts` too.
+- `uniform layout drift detector` parses the WGSL `struct Frame` declaration and pins the field set + order so anyone editing it gets nudged to update `src/webgpu/uniforms.ts` too.
 
 WGSL versions are hand-mirrored by the corresponding TS module; the TS tests
 act as the reference. Shader correctness beyond that is verified visually —
