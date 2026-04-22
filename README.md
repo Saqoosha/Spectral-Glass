@@ -153,20 +153,24 @@ implementation for the shader.
 
 ## Performance
 
-Apple Silicon (1132×1046, WebGPU `timestamp-query`):
+Apple Silicon (1292×1073, 4 shapes, WebGPU `timestamp-query`, p50 of ≥ 30
+samples):
 
 | Config | GPU time |
 |---|---:|
-| pill N=8  | 1.40 ms |
-| pill N=32 | 6.70 ms |
-| cube N=8  | 2.08 ms |
-| cube N=32 | 9.64 ms |
-| cube N=64 | 11.49 ms |
+| pill N=8  | 1.70 ms |
+| pill N=32 | 6.42 ms |
+| cube N=8  | 1.05 ms |
+| cube N=16 | 1.38 ms |
+| cube N=32 | 1.97 ms |
+| cube N=64 | 3.21 ms |
 
 All within the 16.67 ms vsync budget. Background pixels cost ~nothing; the
-per-λ loop dominates on pill / prism / cube pixels. Apple's TBDR already
-culls background efficiently, but discrete GPUs gain more from the proxy
-pass.
+per-λ loop dominates on pill / prism / cube pixels. Cube is noticeably
+cheaper than pill at the same `N` because the back-face exit is an
+analytical slab intersection instead of the per-wavelength sphere-trace
+pill/prism still pay. Apple's TBDR already culls background efficiently,
+but discrete GPUs gain more from the proxy pass.
 
 ## References
 

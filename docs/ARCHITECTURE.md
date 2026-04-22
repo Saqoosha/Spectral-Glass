@@ -245,23 +245,29 @@ no automated GPU tests.
 ## Performance
 
 Measured on Apple Silicon (Metal 3) via WebGPU `timestamp-query` (`?perf=1`
-URL flag exposes `window._perf.samples`).
-
-After the analytical cube exit + host-side `cubeRot` uniform landed (≈ 800×760,
-4 rotating cubes):
+URL flag exposes `window._perf.samples`). Numbers below are p50 over ≥ 30
+samples at 1292×1073 with 4 shapes on screen:
 
 | Config | GPU time |
 |---|---:|
-| cube N=8  | 0.58 ms |
-| cube N=32 | 1.05 ms |
+| pill N=8  | 1.70 ms |
+| pill N=32 | 6.42 ms |
+| cube N=8  | 1.05 ms |
+| cube N=16 | 1.38 ms |
+| cube N=32 | 1.97 ms |
+| cube N=64 | 3.21 ms |
 
-That's ~7× faster at N=8 and ~8.5× faster at N=32 versus the earlier
-sphere-traced cube (4.01 ms and 8.97 ms respectively). Pill and prism use
-the same sphere-trace path as before — their timings are unchanged.
+Cube is noticeably cheaper than pill at matching `N` because its back-face
+exit is `cubeAnalyticExit` — a single analytical slab intersection plus 2
+Newton refinement steps on the rounded-box SDF — instead of the per-λ
+sphere-traced `insideTrace` + finite-diff normal the pill/prism path still
+runs for every wavelength. On the earlier sphere-traced cube, N=8 took
+~4 ms and N=32 took ~9 ms, so the analytic path is ~4-5× faster for the
+same sample count.
 
 All configurations hold 60 fps with zero dropped frames. On TBDR hardware
 (Apple M-series) background pixels are already efficiently culled; the proxy
-pass mostly helps by emitting zero heavy fragments outside the cube
+pass mostly helps by emitting zero heavy fragments outside the shape
 silhouette. Discrete (non-TBDR) GPUs see a larger relative win.
 
 ### Cost breakdown
@@ -276,7 +282,8 @@ Pill / prism pixel (N=8):
 
 Cube pixel (N=8):
 - Same 64 sphereTrace + 6 front-normal evals as above, but the per-λ back
-  trace is `cubeAnalyticExit` — O(1) slab intersection + rounded-box gradient.
-  The 8 × (48 + 6) inside-trace + back-normal evals from the pill/prism path
-  collapse to ~30 ALU ops.
+  trace is `cubeAnalyticExit` — O(1) slab intersection + 2 Newton refinement
+  steps on the rounded-box SDF to snap the exit onto the rounded rim. The
+  8 × (48 + 6) inside-trace + back-normal evals from the pill/prism path
+  collapse to ~40 ALU ops per wavelength.
 - Texture taps + spectral math identical to pill/prism.
