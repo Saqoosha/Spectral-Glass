@@ -153,13 +153,50 @@ export function initUi(
   spectral.addBinding(params, 'temporalJitter', { label: 'Temporal jitter' });
 
   const shape = pane.addFolder({ title: 'Shape' });
-  shape.addBinding(params, 'shape', {
+  const shapeBinding = shape.addBinding(params, 'shape', {
     options: { Pill: 'pill', 'Prism (rainbow)': 'prism', 'Cube (rotating)': 'cube' },
   });
-  shape.addBinding(params, 'pillLen',   { min: 80,  max: 800, step: 1,   label: 'Length (X)' });
-  shape.addBinding(params, 'pillShort', { min: 20,  max: 200, step: 1,   label: 'Short (Y)'  });
-  shape.addBinding(params, 'pillThick', { min: 10,  max: 200, step: 1,   label: 'Thick (Z)'  });
-  shape.addBinding(params, 'edgeR',     { min: 1,   max: 100, step: 0.5, label: 'Edge radius' });
+  // Pill / prism keep the three independent X/Y/Z sliders (their geometries
+  // care about the asymmetry — a tall thin pill vs a wide slab look very
+  // different). Cube collapses them into a single "Size" slider since all
+  // three half-extents must stay equal for the rotation to be a true cube.
+  const lenBinding   = shape.addBinding(params, 'pillLen',   { min: 80, max: 800, step: 1, label: 'Length (X)' });
+  const shortBinding = shape.addBinding(params, 'pillShort', { min: 20, max: 200, step: 1, label: 'Short (Y)'  });
+  const thickBinding = shape.addBinding(params, 'pillThick', { min: 10, max: 200, step: 1, label: 'Thick (Z)'  });
+  // Cube size proxy — writes to all three pill dims so the existing per-pill
+  // halfSize.xyz pipeline doesn't need a separate code path.
+  const cubeSize = { value: params.pillLen };
+  const sizeBinding = shape.addBinding(cubeSize, 'value', { min: 80, max: 600, step: 1, label: 'Size' });
+  sizeBinding.on('change', () => {
+    if (params.shape !== 'cube') return;
+    params.pillLen   = cubeSize.value;
+    params.pillShort = cubeSize.value;
+    params.pillThick = cubeSize.value;
+  });
+  shape.addBinding(params, 'edgeR', { min: 1, max: 100, step: 0.5, label: 'Edge radius' });
+
+  // Show one or three sliders depending on shape, and keep cubeSize in sync
+  // with pillLen so switching shape mid-session doesn't surprise the user.
+  function syncShapeSliders(): void {
+    const isCube = params.shape === 'cube';
+    lenBinding.hidden   = isCube;
+    shortBinding.hidden = isCube;
+    thickBinding.hidden = isCube;
+    sizeBinding.hidden  = !isCube;
+    if (isCube) {
+      // Average the three dims to seed Size — covers the case where shape
+      // was just switched from pill/prism with non-equal extents.
+      const avg = Math.round((params.pillLen + params.pillShort + params.pillThick) / 3);
+      cubeSize.value   = avg;
+      params.pillLen   = avg;
+      params.pillShort = avg;
+      params.pillThick = avg;
+    } else {
+      cubeSize.value = params.pillLen;
+    }
+  }
+  syncShapeSliders();
+  shapeBinding.on('change', () => { syncShapeSliders(); pane.refresh(); });
 
   const misc = pane.addFolder({ title: 'Misc' });
   misc.addBinding(params, 'refractionStrength', { min: 0, max: 1.0, step: 0.001, label: 'Refraction' });
@@ -174,6 +211,9 @@ export function initUi(
     const btn = presets.addButton({ title: preset.label });
     btn.on('click', () => {
       preset.apply(params);
+      // Presets can switch shape AND change pill dims, so re-evaluate which
+      // sliders are visible and reseed cubeSize before the refresh paints.
+      syncShapeSliders();
       pane.refresh();
       markSceneChanged();
       onChange();
