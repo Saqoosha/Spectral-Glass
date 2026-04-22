@@ -194,7 +194,9 @@ Four shapes. `sceneSdf` dispatches on the `shape` uniform:
   `sdBox(p with z ← p.z − z*) × waveLipFactor` — the Lipschitz factor
   corrects for the extra gradient the z-shift adds along x/y. Rotation is
   precomputed on the host as `plateRot` (rx·ry at 0.30 + 0.20 rad/s, rate
-  ratio chosen as an irrational so the tumble doesn't loop within ~1 min).
+  ratio chosen as coprime small integers (2:3) so the combined orientation
+  takes ~63 s to repeat — long enough to read as non-looping in practice;
+  see `src/math/plate.ts` for the explicit period derivation).
 
 Sphere trace starts from a per-pixel ray origin and direction (see Camera
 above), marches with `HIT_EPS = 0.25` and `MIN_STEP = 0.5`. For pill and
@@ -351,8 +353,8 @@ Cube pixel (N=8):
 - Texture taps + spectral math identical to pill/prism.
 
 Plate pixel (N=8):
-- Front sphere-trace runs ~40–50 % fewer steps than pill/prism at matching
-  size because `waveLipFactor` ≈ 0.86 at default wave params (vs the
+- Front sphere-trace runs ~35 % fewer steps than pill/prism at matching
+  size because `waveLipFactor` ≈ 0.92 at default wave params (vs the
   conservative 0.6 we had before) lets each step consume more true distance
   while still staying inside it.
 - Per-λ back trace is `plateAnalyticExit`: slab pick + 3 Newton iterations

@@ -10,27 +10,39 @@ export const FOV_MAX = 120;
 /** Plate wave-amplitude bounds (px). Mirrors the slider range below.
  *  Persistence clamps to these so a hand-edited storage with `waveAmp =
  *  100000` can't push `waveLipFactor` so close to zero that sphereTrace
- *  stalls on every plate fragment (visible as a black plate). */
+ *  stalls on every plate fragment (visible as a black plate). The slider
+ *  reads the same constants below so the two stay in sync. */
 export const WAVE_AMP_MIN = 0;
 export const WAVE_AMP_MAX = 60;
 
-/** Plate wavelength bounds (px). The lower bound exists for the same Lipschitz
- *  reason as WAVE_AMP_MAX — at very short wavelengths `waveFreq = 2π/λ`
- *  explodes and `(amp·freq)²` swamps `waveLipFactor`. The upper bound matches
- *  the UI slider so persistence and slider agree. */
+/** Plate wavelength bounds (px). The lower bound (60 px) is high enough that
+ *  even at WAVE_AMP_MAX (60 px) the worst-case Lipschitz factor stays
+ *  ≈ 0.16 — small but non-zero, so `MIN_STEP = 0.5` in sphere-trace keeps
+ *  marching forward instead of stalling. The upper bound matches the UI
+ *  slider so persistence and slider agree. */
 export const WAVE_WAVELENGTH_MIN = 60;
 export const WAVE_WAVELENGTH_MAX = 800;
 
-/** Rounded-edge radius bounds (px). Persistence clamps to keep
- *  `cubeAnalyticExit`'s degenerate-normal fallback unreachable: it only
- *  fires when `edgeR ≥ smallest halfSize`, which is filtered host-side at
- *  every render frame — but a corrupt storage value of `edgeR = 1e6` would
- *  also push `pill.halfSize + edgeR` extents into proxy-bounds territory
- *  that fills the screen. The render-loop clamp `Math.min(params.edgeR,
- *  pill.hx, ...)` saves us from that, but defensively clamping at the
- *  persistence boundary too prevents a one-frame visual glitch. */
-export const EDGE_R_MIN = 0;
+/** Rounded-edge radius bounds (px). Lower bound is 1 (slider min) — `edgeR=0`
+ *  is technically valid for the SDF but the slider can't produce it, so
+ *  persistence rejects it too to keep the "slider is the source of truth"
+ *  invariant intact. Upper bound is 100; the render-loop already clamps
+ *  `min(edgeR, hx, hy, hz)` so a stale storage value that exceeds halfSize
+ *  is harmless, but clamping at the persistence boundary too prevents a
+ *  one-frame visual glitch when oversized values get loaded. */
+export const EDGE_R_MIN = 1;
 export const EDGE_R_MAX = 100;
+
+/** Pill / cube / plate dimension bounds (px). Slider ranges below — these
+ *  exports let persistence reject negative or absurd hand-edited values
+ *  that would either invert the SDF (negative half-size makes `abs(p) - h`
+ *  always positive → shape vanishes) or fill the entire screen. */
+export const PILL_LEN_MIN   = 80;
+export const PILL_LEN_MAX   = 800;
+export const PILL_SHORT_MIN = 20;
+export const PILL_SHORT_MAX = 200;
+export const PILL_THICK_MIN = 10;
+export const PILL_THICK_MAX = 200;
 
 export type Params = {
   sampleCount: 3 | 8 | 16 | 32 | 64;
@@ -219,27 +231,27 @@ export function initUi(
   // care about the asymmetry — a tall thin pill vs a wide slab look very
   // different). Cube collapses them into a single "Size" slider since all
   // three half-extents must stay equal for the rotation to be a true cube.
-  const lenBinding   = shape.addBinding(params, 'pillLen',   { min: 80, max: 800, step: 1, label: 'Length (X)' });
-  const shortBinding = shape.addBinding(params, 'pillShort', { min: 20, max: 200, step: 1, label: 'Short (Y)'  });
-  const thickBinding = shape.addBinding(params, 'pillThick', { min: 10, max: 200, step: 1, label: 'Thick (Z)'  });
+  const lenBinding   = shape.addBinding(params, 'pillLen',   { min: PILL_LEN_MIN,   max: PILL_LEN_MAX,   step: 1, label: 'Length (X)' });
+  const shortBinding = shape.addBinding(params, 'pillShort', { min: PILL_SHORT_MIN, max: PILL_SHORT_MAX, step: 1, label: 'Short (Y)'  });
+  const thickBinding = shape.addBinding(params, 'pillThick', { min: PILL_THICK_MIN, max: PILL_THICK_MAX, step: 1, label: 'Thick (Z)'  });
   // Cube size proxy — writes to all three pill dims so the existing per-pill
   // halfSize.xyz pipeline doesn't need a separate code path.
   const cubeSize = { value: params.pillLen };
-  const sizeBinding = shape.addBinding(cubeSize, 'value', { min: 80, max: 600, step: 1, label: 'Size' });
+  const sizeBinding = shape.addBinding(cubeSize, 'value', { min: PILL_LEN_MIN, max: 600, step: 1, label: 'Size' });
   sizeBinding.on('change', () => {
     if (params.shape !== 'cube') return;
     params.pillLen   = cubeSize.value;
     params.pillShort = cubeSize.value;
     params.pillThick = cubeSize.value;
   });
-  const edgeBinding = shape.addBinding(params, 'edgeR', { min: 1, max: 100, step: 0.5, label: 'Edge radius' });
+  const edgeBinding = shape.addBinding(params, 'edgeR', { min: EDGE_R_MIN, max: EDGE_R_MAX, step: 0.5, label: 'Edge radius' });
   // Plate-only wave controls. Both stay hidden for pill/prism/cube and
   // animate in only when shape === 'plate' (syncShapeSliders below).
   const waveAmpBinding = shape.addBinding(params, 'waveAmp', {
-    min: 0, max: 60, step: 0.5, label: 'Wave amp',
+    min: WAVE_AMP_MIN, max: WAVE_AMP_MAX, step: 0.5, label: 'Wave amp',
   });
   const waveLenBinding = shape.addBinding(params, 'waveWavelength', {
-    min: 60, max: 800, step: 1, label: 'Wavelength',
+    min: WAVE_WAVELENGTH_MIN, max: WAVE_WAVELENGTH_MAX, step: 1, label: 'Wavelength',
   });
 
   // Show the right subset of sliders for each shape. Pill/prism use all three

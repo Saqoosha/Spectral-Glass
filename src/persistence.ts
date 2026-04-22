@@ -1,5 +1,7 @@
 import {
   EDGE_R_MAX, EDGE_R_MIN, FOV_MAX, FOV_MIN,
+  PILL_LEN_MAX, PILL_LEN_MIN, PILL_SHORT_MAX, PILL_SHORT_MIN,
+  PILL_THICK_MAX, PILL_THICK_MIN,
   WAVE_AMP_MAX, WAVE_AMP_MIN, WAVE_WAVELENGTH_MAX, WAVE_WAVELENGTH_MIN,
   type Params,
 } from './ui';
@@ -41,18 +43,25 @@ function validateParams(u: unknown): Partial<Params> {
   if (isFiniteNumber(p.sampleCount) && SAMPLE_COUNTS.has(p.sampleCount as Params['sampleCount']))      out.sampleCount    = p.sampleCount as Params['sampleCount'];
   if (isFiniteNumber(p.n_d))                out.n_d                = p.n_d;
   if (isFiniteNumber(p.V_d))                out.V_d                = p.V_d;
-  if (isFiniteNumber(p.pillLen))            out.pillLen            = p.pillLen;
-  if (isFiniteNumber(p.pillShort))          out.pillShort          = p.pillShort;
-  if (isFiniteNumber(p.pillThick))          out.pillThick          = p.pillThick;
+  // Pill / cube / plate dimension clamps. Negative or absurd values would
+  // either invert the SDF (`abs(p) - h` always positive → shape vanishes)
+  // or push proxy bounds to fill the screen. Slider ranges in ui.ts are the
+  // source of truth.
+  if (isFiniteNumber(p.pillLen))            out.pillLen            = clamp(p.pillLen,   PILL_LEN_MIN,   PILL_LEN_MAX);
+  if (isFiniteNumber(p.pillShort))          out.pillShort          = clamp(p.pillShort, PILL_SHORT_MIN, PILL_SHORT_MAX);
+  if (isFiniteNumber(p.pillThick))          out.pillThick          = clamp(p.pillThick, PILL_THICK_MIN, PILL_THICK_MAX);
   if (isFiniteNumber(p.edgeR))              out.edgeR              = clamp(p.edgeR, EDGE_R_MIN, EDGE_R_MAX);
   if (isFiniteNumber(p.refractionStrength)) out.refractionStrength = p.refractionStrength;
   if (typeof p.temporalJitter === 'boolean') out.temporalJitter    = p.temporalJitter;
   if (typeof p.debugProxy === 'boolean')     out.debugProxy        = p.debugProxy;
   if (typeof p.taa === 'boolean')            out.taa               = p.taa;
   if (typeof p.paused === 'boolean')         out.paused            = p.paused;
-  // Plate wave controls. Clamp to UI slider bounds so a hand-edited storage
-  // can't push waveLipFactor (1/sqrt(1 + (amp·freq)²)) toward zero — that
-  // would stall sphereTrace per fragment (visible black plate). The slider
+  // Plate wave controls. Clamp to UI slider bounds so hand-edited storage
+  // can't push `(amp·freq)²` arbitrarily large — at the slider extremes
+  // (amp=60, wavelength=60) waveLipFactor still bottoms out at ≈ 0.16
+  // which `MIN_STEP = 0.5` in sphereTrace handles fine; without these
+  // clamps a value like `waveAmp = 1e6` would cut waveLipFactor to ~1e-7
+  // and stall the trace per fragment (visible black plate). The slider
   // ranges in ui.ts are the source of truth; persistence mirrors them.
   if (isFiniteNumber(p.waveAmp))         out.waveAmp        = clamp(p.waveAmp, WAVE_AMP_MIN, WAVE_AMP_MAX);
   if (isFiniteNumber(p.waveWavelength))  out.waveWavelength = clamp(p.waveWavelength, WAVE_WAVELENGTH_MIN, WAVE_WAVELENGTH_MAX);

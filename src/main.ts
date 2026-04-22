@@ -73,14 +73,18 @@ async function main(): Promise<void> {
   let pills: Pill[] = stored?.pills && stored.pills.length > 0
     ? stored.pills.map((p) => ({ ...p }))
     : defaultPills(initSize.width, initSize.height);
-  let detach = attachDrag(
+  // Re-attach the pointer-event drag layer with the same shape/wave callbacks.
+  // Hoisted into a helper because the loop body re-creates `pills` on Space
+  // (random-shuffle), so we need the same arg list at two call sites.
+  // Plate's visible silhouette extends past halfSize by `waveAmp` in the
+  // tumbling Z direction; report that to the drag layer so the hit circle
+  // matches the rendered shape (cube/pill/prism don't bulge → 0 margin).
+  const makeDrag = (): (() => void) => attachDrag(
     ctx.canvas, pills, ctx.dpr,
     () => SHAPE_ID[params.shape],
-    // Plate's visible silhouette extends past halfSize by `waveAmp` in the
-    // tumbling Z direction; report that to the drag layer so the hit circle
-    // matches the rendered shape (cube/pill/prism don't bulge → 0 margin).
     () => params.shape === 'plate' ? params.waveAmp : 0,
   );
+  let detach = makeDrag();
 
   const saveDebounced = debouncedSaver(250);
   const persist = () => saveDebounced.schedule(params, pills);
@@ -153,14 +157,7 @@ async function main(): Promise<void> {
         cx: Math.random() * cur.width,
         cy: Math.random() * cur.height,
       }));
-      detach = attachDrag(
-    ctx.canvas, pills, ctx.dpr,
-    () => SHAPE_ID[params.shape],
-    // Plate's visible silhouette extends past halfSize by `waveAmp` in the
-    // tumbling Z direction; report that to the drag layer so the hit circle
-    // matches the rendered shape (cube/pill/prism don't bulge → 0 margin).
-    () => params.shape === 'plate' ? params.waveAmp : 0,
-  );
+      detach = makeDrag();
       markSceneChanged();
       persist();
     }
@@ -235,8 +232,13 @@ async function main(): Promise<void> {
       }
 
       // Plate forces a square XY face (hy ≡ hx) so pillShort is effectively
-      // unused, and reinterprets edgeR as wave amplitude (no clamp against
-      // halfSize — the wave is a surface displacement, not a rim radius).
+      // unused. Plate's wave amplitude is driven by `params.waveAmp` →
+      // `frame.waveAmp` (separate uniform); `pill.edgeR` is ignored by
+      // sdfWavyPlate on the GPU, so the host just passes `params.edgeR`
+      // through unmodified instead of clamping against halfSize. The clamp
+      // matters only for cube/pill/prism, where edgeR really is the rim
+      // radius and `edgeR ≥ smallest halfSize` would push the rounded-box
+      // SDF into degenerate geometry.
       const isPlate = params.shape === 'plate';
       for (const pill of pills) {
         pill.hx    = params.pillLen   / 2;
@@ -335,15 +337,27 @@ async function main(): Promise<void> {
       prevSceneTime = sceneTime;
 
       if (perf) {
-        void perf.readMs().then((ms) => {
-          if (ms === null || !Number.isFinite(ms)) return;
-          perfStats.gpuMs = ms;
-          if (perfHud) {
-            perfWindow.lastMs = ms;
-            perfWindow.samples.push(ms);
-            if (perfWindow.samples.length > 240) perfWindow.samples.shift();
-          }
-        });
+        void perf.readMs()
+          .then((ms) => {
+            if (ms === null || !Number.isFinite(ms)) return;
+            perfStats.gpuMs = ms;
+            if (perfHud) {
+              perfWindow.lastMs = ms;
+              perfWindow.samples.push(ms);
+              if (perfWindow.samples.length > 240) perfWindow.samples.shift();
+            }
+          })
+          // Without an explicit catch, a rejection here (typically GPU
+          // device-lost mid-frame, buffer destroyed during a resize race,
+          // or an exotic browser WebGPU implementation error) would land
+          // in the global `unhandledrejection` channel — the perf graph
+          // silently freezes at the last successful sample with no
+          // explanation. NaN flatlines the readout instead, making the
+          // failure debuggable.
+          .catch((err) => {
+            console.warn('[perf] readMs failed (likely GPU device lost):', err);
+            perfStats.gpuMs = NaN;
+          });
       }
     } catch (err) {
       console.error('[frame] render loop aborted:', err);

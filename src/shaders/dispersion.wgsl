@@ -59,9 +59,10 @@ struct Frame {
   // texture instead of ghosting.
   plateRotPrev:       mat3x3<f32>,
   // Plate wave parameters. `waveLipFactor` is the precomputed safety factor
-  // 1/sqrt(1 + 2·(amp·freq)²) applied inside sdfWavyPlate so the raw
+  // 1/sqrt(1 + (amp·freq)²) applied inside sdfWavyPlate so the raw
   // (box - wave) value is a valid Lipschitz bound — host-side computation
-  // avoids an `inverseSqrt` on every SDF eval.
+  // avoids an `inverseSqrt` on every SDF eval. (See the derivation in
+  // src/webgpu/uniforms.ts for why max|∇waveZ|² = (amp·k)², not 2·(amp·k)².)
   //
   // `sceneTime` is the time value for scene motion (rotation + wave phase).
   // It freezes when the user hits "Stop the world" while the noise-seeding
@@ -722,11 +723,15 @@ fn reprojectHit(hitWorld: vec3<f32>, fragCoord: vec2<f32>, pillIdx: u32, shapeId
   // the reprojection collapses to identity and prevPx == currPx — safe.
   if (prevPx.z <= 0.0 || currPx.z <= 0.0) { return fallbackUv; }
 
-  // Jitter cancels in the screen-space delta to first order. Strictly the
-  // perspective divide is non-linear in p.z, so there's a ~jitter·rotation
-  // residual on the order of jitter (≤ 0.5 px) × per-frame rotation
-  // (≈ 0.005 rad at default tumble) ≈ 0.0025 px — well below the pixel
-  // grid, invisible after EMA.
+  // `currPx` carries the sub-pixel jitter of the original ray, and
+  // `prevPx` is the SAME world point reprojected to the previous frame's
+  // camera — both share that jitter, so it cancels in the delta to first
+  // order. Strictly the perspective divide is non-linear in p.z, so there's
+  // a residual of order (jitter × per-frame rotation × perspective factor),
+  // ≤ 0.5 px × ≈ 0.005 rad ≈ < 0.01 px at typical FOVs — well below the
+  // pixel grid, invisible after EMA. (Adding to the unjittered `fragCoord`
+  // — not to `currPx` — is the part that actually pins the read to the
+  // pixel grid for static scenes.)
   let motionPx = prevPx.xy - currPx.xy;
   let prevUv   = (fragCoord + motionPx) / frame.resolution;
   // Disocclusion: the point was outside the screen a frame ago. Same
