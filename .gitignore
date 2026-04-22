@@ -3,4 +3,7 @@ dist
 .DS_Store
 .vscode
 .superpowers
+.claude
+.cursor
+.serena
 *.log
