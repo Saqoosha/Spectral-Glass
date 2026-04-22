@@ -188,7 +188,7 @@ const PRESETS: readonly Preset[] = [
       p.pillLen            = 400;  // square face
       p.pillShort          = 400;  // unused (forced = pillLen in main.ts)
       p.pillThick          = 100;  // thick slab — thin plates lose chroma
-      p.edgeR              = 15;   // unused for plate (slider hidden)
+      p.edgeR              = 4;    // tiny rounded rim — smooths the front-Z / side-X|Y crease so plate edge speckles vanish at their source
       p.waveAmp            = 20;
       p.waveWavelength     = 300;
       p.refractionStrength = 0.2;
@@ -276,7 +276,7 @@ export function initUi(
     shortBinding.hidden    = isCube || isPlate;
     thickBinding.hidden    = isCube;
     sizeBinding.hidden     = !isCube;
-    edgeBinding.hidden     = isPlate;   // plate reuses the field? No — wave controls below. Hide edgeR.
+    edgeBinding.hidden     = false;     // plate uses edgeR as the rounded rim radius (smooths wavy Z face into flat X/Y faces)
     waveAmpBinding.hidden  = !isPlate;
     waveLenBinding.hidden  = !isPlate;
     if (isCube) {

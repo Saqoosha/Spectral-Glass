@@ -233,20 +233,17 @@ async function main(): Promise<void> {
 
       // Plate forces a square XY face (hy ≡ hx) so pillShort is effectively
       // unused. Plate's wave amplitude is driven by `params.waveAmp` →
-      // `frame.waveAmp` (separate uniform); `pill.edgeR` is ignored by
-      // sdfWavyPlate on the GPU, so the host just passes `params.edgeR`
-      // through unmodified instead of clamping against halfSize. The clamp
-      // matters only for cube/pill/prism, where edgeR really is the rim
-      // radius and `edgeR ≥ smallest halfSize` would push the rounded-box
-      // SDF into degenerate geometry.
+      // `frame.waveAmp` (separate uniform). `pill.edgeR` is now the rounded-
+      // corner radius for the rim that smooths the wavy front Z face into
+      // the flat side X / Y faces — same role as in cube/pill/prism, so the
+      // same `min(edgeR, halfSize)` clamp applies (edgeR ≥ smallest halfSize
+      // would invert the rounded-box SDF into degenerate geometry).
       const isPlate = params.shape === 'plate';
       for (const pill of pills) {
         pill.hx    = params.pillLen   / 2;
         pill.hy    = isPlate ? pill.hx : params.pillShort / 2;
         pill.hz    = params.pillThick / 2;
-        pill.edgeR = isPlate
-          ? params.edgeR
-          : Math.min(params.edgeR, pill.hx, pill.hy, pill.hz);
+        pill.edgeR = Math.min(params.edgeR, pill.hx, pill.hy, pill.hz);
       }
       // Paused-frame accounting for progressive averaging (see declaration
       // above). During a reset-override window we hold pausedFrames at 1 so

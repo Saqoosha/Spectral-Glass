@@ -155,7 +155,7 @@ fn sdfPrism(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> f32 {
 // defaults, previously a conservative hardcoded 0.6 — ≈35% fewer sphereTrace
 // steps at the same safety margin, or equivalently ≈53% more progress per
 // step).
-fn sdfWavyPlate(pIn: vec3<f32>, halfSize: vec3<f32>) -> f32 {
+fn sdfWavyPlate(pIn: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> f32 {
   let p = frame.plateRot * pIn;
 
   // Force square XY face (halfSize.y ignored — UI hides pillShort for plate).
@@ -172,9 +172,16 @@ fn sdfWavyPlate(pIn: vec3<f32>, halfSize: vec3<f32>) -> f32 {
 
   // Slab centered on the wavy midsurface. Both faces ride `waveZ` together,
   // giving a constant-thickness bent sheet instead of a bulge/pinch volume.
+  // Rounded box (same shrink-then-rim pattern as sdfCube, edgeR for the
+  // fillet between the wavy front Z face and the flat side X / Y faces) so
+  // the rim crease that would otherwise live at `q.x = q.z = 0` doesn't
+  // exist as a math singularity — the rounded transition gives a continuous
+  // gradient across the corner, which removes the dominant source of the
+  // "speckle along plate edge" artifact at its origin instead of relying
+  // on `plateCreaseAt` to detect-and-divert it.
   let pShift = vec3<f32>(p.x, p.y, p.z - waveZ);
-  let q      = abs(pShift) - h;
-  let box    = length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
+  let q      = abs(pShift) - h + vec3<f32>(edgeR);
+  let box    = length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - edgeR;
 
   return box * frame.waveLipFactor;
 }
@@ -196,9 +203,10 @@ fn sceneSdf(p: vec3<f32>) -> f32 {
       pd = sdfPrism(local, pill.halfSize, pill.edgeR);
     } else if (shapeId == 3) {
       // Plate: wave amp + freq + time come from global uniforms
-      // (frame.waveAmp / frame.waveFreq / frame.sceneTime), pill.edgeR is
-      // ignored for this shape.
-      pd = sdfWavyPlate(local, pill.halfSize);
+      // (frame.waveAmp / frame.waveFreq / frame.sceneTime). pill.edgeR is
+      // the rim radius for the rounded corner that smooths the wavy front
+      // Z face into the flat side X / Y faces (eliminates the rim crease).
+      pd = sdfWavyPlate(local, pill.halfSize, pill.edgeR);
     } else {
       pd = sdfPill(local, pill.halfSize, pill.edgeR);
     }
@@ -473,8 +481,12 @@ fn plateCreaseAt(hitWorld: vec3<f32>, pillIdx: u32) -> bool {
   let st   = frame.sceneTime;
   let waveZ  = frame.waveAmp * sin(frame.waveFreq * p.x + st * 2.0)
                               * sin(frame.waveFreq * p.y + st * 2.0);
+  // Match sdfWavyPlate: rounded box uses (h - edgeR) as the inner extent.
+  // The geometric crease is now smoothed across the rounded fillet so this
+  // detector basically never fires — kept as defense-in-depth in case wave
+  // parameters drive a configuration the rounded corner can't fully fix.
   let pShift = vec3<f32>(p.x, p.y, p.z - waveZ);
-  let q      = abs(pShift) - h;
+  let q      = abs(pShift) - h + vec3<f32>(pill.edgeR);
   let eps    = HIT_EPS / max(frame.waveLipFactor, 1e-3);
   let nearX  = i32(abs(q.x) < eps);
   let nearY  = i32(abs(q.y) < eps);
@@ -492,7 +504,7 @@ fn hitPlatePillIdx(p: vec3<f32>) -> u32 {
   for (var i: u32 = 0u; i < count; i = i + 1u) {
     let pill  = frame.pills[i];
     let local = p - pill.center;
-    let d     = abs(sdfWavyPlate(local, pill.halfSize));
+    let d     = abs(sdfWavyPlate(local, pill.halfSize, pill.edgeR));
     if (d < bestD) { bestD = d; best = i; }
   }
   return best;
