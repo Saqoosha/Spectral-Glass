@@ -1066,19 +1066,30 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     let r2 = refract(r1, nBack, ior);
 
     var refractL: vec3<f32>;
-    // NaN-aware TIR check: `r2 != r2` is true only for NaN, so if any
-    // component is NaN the negation flips the gate and we take the
-    // reflection branch instead of sampling the photo at a NaN UV (which
-    // is implementation-defined and tends to blow up to either zero or
-    // garbage). `dot(r2, r2) < 1e-4` alone wouldn't catch this because
-    // NaN comparisons always evaluate to false in WGSL.
-    let r2dot   = dot(r2, r2);
-    let r2bad   = r2dot < 1e-4 || r2dot != r2dot;
+    // Bad-r2 gate covers three failure modes that all produce single-pixel
+    // speckles along plate edges if left to fall through:
+    //   1. Real TIR — refract returned (0,0,0) because k < 0. Standard.
+    //   2. NaN r2 — happens when nBack came out NaN-ish from a corner-case
+    //      back exit. WGSL's `<` against NaN is always false, so we add an
+    //      explicit `r2dot != r2dot` self-comparison to catch it.
+    //   3. The refracted UV would land outside the photo. The sampler is
+    //      mirror-repeat (see photo.ts — chosen so legit reflection /
+    //      strong-refraction samples don't show edge-clamp smears), but
+    //      that means an erroneous UV mirrors back into the photo at a
+    //      visually unrelated location: bright photo region → white
+    //      speckle, dark region → black speckle. Detecting this BEFORE
+    //      the sample and falling back to reflSrc keeps the edge clean.
+    // For all three the external reflection sample is the visually-closest
+    // valid colour at a grazing/degenerate hit anyway.
+    let uvOff       = screenUvFromWorld(pExit.xy) + r2.xy * strength;
+    let uvCover     = coverUv(uvOff);
+    let uvInBounds  = all(uvCover >= vec2<f32>(0.0)) && all(uvCover <= vec2<f32>(1.0));
+    let r2dot       = dot(r2, r2);
+    let r2bad       = r2dot < 1e-4 || r2dot != r2dot || !uvInBounds;
     if (r2bad) {
-      refractL = reflSrc;  // exit TIR (or NaN) → take the external reflection
+      refractL = reflSrc;
     } else {
-      let uvOff = screenUvFromWorld(pExit.xy) + r2.xy * strength;
-      refractL  = textureSampleLevel(photoTex, photoSmp, coverUv(uvOff), 0.0).rgb;
+      refractL = textureSampleLevel(photoTex, photoSmp, uvCover, 0.0).rgb;
     }
 
     // Per-wavelength Schlick Fresnel: short λ (blue) has higher IOR → higher F.
