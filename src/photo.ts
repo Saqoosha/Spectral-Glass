@@ -1,9 +1,13 @@
+import { generateMipmaps, mipLevelsFor } from './webgpu/mipmap';
+
 export type PhotoTex = {
   readonly texture: GPUTexture;
   readonly sampler: GPUSampler;
   readonly width:   number;
   readonly height:  number;
 };
+
+const PHOTO_FORMAT: GPUTextureFormat = 'rgba8unorm-srgb';
 
 export async function loadPhoto(device: GPUDevice, seed = Date.now()): Promise<PhotoTex> {
   const url = `https://picsum.photos/seed/${seed}/1920/1080`;
@@ -22,16 +26,19 @@ export async function loadPhoto(device: GPUDevice, seed = Date.now()): Promise<P
 function uploadBitmap(device: GPUDevice, bitmap: ImageBitmap): PhotoTex {
   const width  = bitmap.width;
   const height = bitmap.height;
+  const mipLevelCount = mipLevelsFor(width, height);
   const texture = device.createTexture({
     label:  'photo',
     size:   [width, height, 1],
-    format: 'rgba8unorm-srgb',
-    // copyExternalImageToTexture / writeTexture both require RENDER_ATTACHMENT
-    // in current Dawn/Chrome despite only sampling from the texture afterward.
+    mipLevelCount,
+    format: PHOTO_FORMAT,
+    // RENDER_ATTACHMENT is required both by copyExternalImageToTexture and
+    // by the mipmap-blit render passes that fill levels 1..N-1.
     usage:  GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
   });
   device.queue.copyExternalImageToTexture({ source: bitmap }, { texture }, [width, height, 1]);
   bitmap.close();
+  generateMipmaps(device, texture, PHOTO_FORMAT, mipLevelCount);
   return { texture, sampler: sharedSampler(device), width, height };
 }
 
@@ -54,15 +61,16 @@ function createGradientTexture(device: GPUDevice): PhotoTex {
       bytes[i + 3] = 255;
     }
   }
+  const mipLevelCount = mipLevelsFor(W, H);
   const texture = device.createTexture({
     label:  'photo-fallback',
     size:   [W, H, 1],
-    format: 'rgba8unorm-srgb',
-    // copyExternalImageToTexture / writeTexture both require RENDER_ATTACHMENT
-    // in current Dawn/Chrome despite only sampling from the texture afterward.
+    mipLevelCount,
+    format: PHOTO_FORMAT,
     usage:  GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
   });
   device.queue.writeTexture({ texture }, bytes, { bytesPerRow: W * 4 }, [W, H, 1]);
+  generateMipmaps(device, texture, PHOTO_FORMAT, mipLevelCount);
   return { texture, sampler: sharedSampler(device), width: W, height: H };
 }
 
@@ -72,6 +80,10 @@ function sharedSampler(device: GPUDevice): GPUSampler {
   cachedSampler = device.createSampler({
     magFilter:    'linear',
     minFilter:    'linear',
+    // Trilinear filtering across the mip chain softens refracted UV
+    // aliasing at grazing angles — the shader hands us an explicit LOD
+    // per wavelength tap (see dispersion.wgsl: photoLod).
+    mipmapFilter: 'linear',
     // Strong refraction pushes sampled UVs well past [0,1]. `mirror-repeat`
     // folds the content back seamlessly — no visible tile seam (like `repeat`)
     // and no edge smear (like `clamp-to-edge`).

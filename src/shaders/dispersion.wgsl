@@ -1048,6 +1048,41 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   // the front face, so compute once.
   let cosT = max(dot(-rd, nFront), 0.0);
 
+  // Texture-footprint LOD for the per-wavelength photo sample below. Two
+  // regimes cause the refracted-UV Jacobian w.r.t. screen pixels to spike,
+  // each driving a separate term:
+  //
+  //   (A) Grazing incidence — d(uv)/d(px) scales as ~1/cosT. Captured by
+  //       `-log2(cosT)`. The -1.0 bias keeps level 0 active for cosT >= 0.5
+  //       so normal viewing stays sharp.
+  //
+  //   (B) Rounded-edge normal turn — on the cube/plate's rounded rim the
+  //       surface normal rotates ~90° across the rim's ~edgeR-wide footprint
+  //       in screen space. Per-pixel δn there is large, and refract's
+  //       Jacobian amplifies that into a big δuv even at moderate cosT.
+  //       Detect by transforming nFront into the shape's local frame (where
+  //       flat faces align with one axis) and measuring tilt via the
+  //       complement of the largest |axis component|: flat face → 0, rim
+  //       edge → ~0.29, corner → ~0.42. Multiply by 8 for a ~2.3 LOD boost
+  //       at mid-rim — enough to suppress the sparkle while leaving flat
+  //       faces untouched. Plate's wavy ±Z faces also pick up a small tilt
+  //       that softens their own mild refraction aliasing.
+  //
+  // Pill / prism don't participate in (B) — their silhouettes are either
+  // flat faces or continuous quadric curves that (A) already handles.
+  //
+  // Clamp 6.0 caps drift into the tiny tail of the pyramid where the photo
+  // is only a few pixels wide and detail is meaningless.
+  var curvatureTilt: f32 = 0.0;
+  if (isCube) {
+    let nLocal    = frame.cubeRot * nFront;
+    curvatureTilt = 1.0 - max(max(abs(nLocal.x), abs(nLocal.y)), abs(nLocal.z));
+  } else if (isPlate) {
+    let nLocal    = frame.plateRot * nFront;
+    curvatureTilt = 1.0 - max(max(abs(nLocal.x), abs(nLocal.y)), abs(nLocal.z));
+  }
+  let photoLod = clamp(-log2(max(cosT, 0.02)) - 1.0 + curvatureTilt * 8.0, 0.0, 6.0);
+
   // Per-pixel stratified jitter: each pixel gets its own wavelength phase so
   // adjacent pixels sample DIFFERENT λ. The eye (and post-process history
   // accumulation) averages the spatial noise, so the rainbow looks smooth at
@@ -1129,7 +1164,7 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     } else if (r2NaN || r2OOB) {
       refractL = bg;
     } else {
-      refractL = textureSampleLevel(photoTex, photoSmp, uvCover, 0.0).rgb;
+      refractL = textureSampleLevel(photoTex, photoSmp, uvCover, photoLod).rgb;
     }
 
     // Per-wavelength Schlick Fresnel: short λ (blue) has higher IOR → higher F.
