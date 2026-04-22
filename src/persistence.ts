@@ -10,10 +10,12 @@ import type { Pill } from './pills';
 
 const KEY     = 'realrefraction:config';
 // `taa: boolean` was renamed to `aaMode: 'none' | 'fxaa' | 'taa'` without
-// bumping the version — validateParams simply drops the unknown `taa`
-// field on an older payload, so dims/pills survive and aaMode falls back
-// to the default ('taa'). A forced reset would have cost every user
-// their layout for one low-value field.
+// bumping the version. validateParams migrates legacy `taa: boolean`
+// payloads (`true → 'taa'`, `false → 'none'`) when no `aaMode` field is
+// present, preserving the user's prior intent instead of snapping them
+// to the default. Explicit `aaMode` in the payload always wins. Bumping
+// the version would have cost every user their layout for one low-value
+// field.
 const VERSION = 1;
 
 type Stored = {

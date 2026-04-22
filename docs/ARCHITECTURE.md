@@ -201,14 +201,18 @@ fullscreen-triangle blit pipeline in `src/webgpu/mipmap.ts`. The
 per-wavelength refraction sample in the fragment shader picks a LOD
 based on two terms:
 
-- **Grazing incidence** — `max(0, -log2(cosT) - 1)` — sample footprint
-  grows as `~1/cosT` at grazing angles.
+- **Grazing incidence** — `-log2(cosT) - 1` — sample footprint grows as
+  `~1/cosT` at grazing angles. cosT is clamped to ≥ 0.02 inside the log
+  so the term stays bounded at extreme angles.
 - **Rounded-rim curvature** — `(1 - max(|nLocal|)) · 8` — on the rounded
   edges of cube / plate the front normal rotates ~90° across an
   `edgeR`-wide screen region, blowing up the refracted-UV Jacobian
   independently of `cosT`. Pill / prism skip this term.
 
-The sum is clamped to `[0, 6]`. Trilinear filtering on the sampler
+The sum of the two terms is clamped to `[0, 6]`. The individual terms
+are not floored at 0; a near-head-on pixel gives a negative grazing
+contribution that cancels part of the curvature boost, and the final
+clamp catches the rest. Trilinear filtering on the sampler
 (`mipmapFilter: 'linear'`) gives the sub-level blending. Background
 samples (bg + reflection fallback) stay at LOD 0 because they're
 1:1 with screen pixels.

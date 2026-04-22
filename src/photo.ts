@@ -79,10 +79,15 @@ function createGradientTexture(device: GPUDevice): PhotoTex {
   return { texture, sampler: sharedSampler(device), width: W, height: H };
 }
 
-let cachedSampler: GPUSampler | null = null;
+// Keyed by GPUDevice to stay correct across hypothetical device-lost
+// reinit — mirrors the per-device cache in src/webgpu/mipmap.ts. Current
+// app treats device-lost as fatal, but using a WeakMap avoids locking that
+// behavior in and keeps the two sampler caches consistent.
+const samplerCache = new WeakMap<GPUDevice, GPUSampler>();
 function sharedSampler(device: GPUDevice): GPUSampler {
-  if (cachedSampler) return cachedSampler;
-  cachedSampler = device.createSampler({
+  let sampler = samplerCache.get(device);
+  if (sampler) return sampler;
+  sampler = device.createSampler({
     magFilter:    'linear',
     minFilter:    'linear',
     // Trilinear filtering across the mip chain softens refracted UV
@@ -95,7 +100,8 @@ function sharedSampler(device: GPUDevice): GPUSampler {
     addressModeU: 'mirror-repeat',
     addressModeV: 'mirror-repeat',
   });
-  return cachedSampler;
+  samplerCache.set(device, sampler);
+  return sampler;
 }
 
 export function destroyPhoto(p: PhotoTex): void {

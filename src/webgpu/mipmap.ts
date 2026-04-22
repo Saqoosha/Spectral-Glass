@@ -65,9 +65,11 @@ function getPipeline(device: GPUDevice, format: GPUTextureFormat): GPURenderPipe
   if (cached) return cached;
   const module = device.createShaderModule({ label: 'mipmap-blit', code: MIPMAP_WGSL });
   // pushErrorScope around sync pipeline creation so an invalid pipeline
-  // (e.g. a format without RENDER_ATTACHMENT support) doesn't silently
-  // sit in the cache and break every future mipmap regen. If the scope
-  // reports an error, drop the bad entry so the next call retries.
+  // (e.g. a format that can't be used as a color attachment) doesn't
+  // silently sit in the cache and break every future mipmap regen. If
+  // the scope reports an error, drop the bad entry so the next call
+  // retries. The first caller still gets the broken pipeline once —
+  // that draw fails via uncapturederror — but subsequent calls self-heal.
   device.pushErrorScope('validation');
   const pipeline = device.createRenderPipeline({
     label:     `mipmap-blit-${format}`,
@@ -76,12 +78,21 @@ function getPipeline(device: GPUDevice, format: GPUTextureFormat): GPURenderPipe
     fragment:  { module, entryPoint: 'fs', targets: [{ format }] },
     primitive: { topology: 'triangle-list' },
   });
-  void device.popErrorScope().then((err) => {
-    if (err) {
-      console.error(`[mipmap] pipeline creation failed for ${format}: ${err.message}`);
+  void device.popErrorScope()
+    .then((err) => {
+      if (err) {
+        console.error(`[mipmap] pipeline creation failed for ${format}: ${err.message}`);
+        cache.pipelines.delete(format);
+      }
+    })
+    // popErrorScope rejects on device-lost; device.ts's `lost` handler
+    // owns the fatal UI, but we still drop the cache entry so any stray
+    // reuse path gets a fresh attempt instead of handing back a broken
+    // pipeline tied to the dead device.
+    .catch((err) => {
+      console.error('[mipmap] popErrorScope rejected (device lost?):', err);
       cache.pipelines.delete(format);
-    }
-  });
+    });
   cache.pipelines.set(format, pipeline);
   return pipeline;
 }
