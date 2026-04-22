@@ -146,71 +146,12 @@ fn sdfPrism(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> f32 {
   return length(max(w, vec2<f32>(0.0))) + min(max(w.x, w.y), 0.0) - edgeR;
 }
 
-// Round brilliant cut diamond — 58 facets reduced to 7 distance terms via
-// D_8 (octagonal) symmetry folding. Produces a convex polytope that reads
-// as a classic jewelry-store brilliant cut.
-//
-// Strategy:
-//   1. Apply `diamondRot` (fixed tilt + Y-axis spin) to the local point.
-//   2. Fold XY into the 1/16 fundamental wedge [0°, 22.5°] via three
-//      reflections: abs on both components of p.xy (folds across the X
-//      and Y axes → first quadrant, 4-fold), swap-if-y>x (folds across
-//      the y=x line → first octant, 8-fold), and reflect across the
-//      22.5° line (folds the octant's upper half onto its lower half →
-//      fundamental π/8 wedge, 16-fold). Each facet class has exactly ONE
-//      representative in the wedge, so evaluating its plane once gives
-//      the correct distance by symmetry — no `min` over multiple rotated
-//      copies.
-//   3. Evaluate 7 signed-distance terms: table (+Z cap), bezel (crown
-//      main), star, upper half (girdle-adjacent crown facet), girdle
-//      cylinder, lower half (girdle-adjacent pavilion facet), pavilion
-//      main. The pointed culet is naturally handled by the pavilion
-//      planes converging at (0, 0, H_BOT) — `max()` closes the shape
-//      correctly at the apex.
-//   4. Return the max (intersection of half-spaces = convex polytope SDF),
-//      with all offsets multiplied by `frame.diamondSize` so the runtime
-//      slider scales the whole shape uniformly.
-//
-// The plane normals and unit-diameter offsets are module-scope constants
-// injected from src/math/diamond.ts via src/webgpu/pipeline.ts. That's the
-// single source of truth — TS computes them once from Tolkowsky angles and
-// the shader never sees raw angles, only the derived plane coefficients.
-//
-// Unlike cube/pill/prism this SDF has NO `edgeR` rounding — sharp facets
-// are the look. Facet creases trip sceneNormal()'s degenerate-gradient
-// sentinel and render as bg (thin dark seam), matching the expected
-// real-diamond crease appearance.
-fn sdfDiamond(pIn: vec3<f32>, diameter: f32) -> f32 {
-  let p0 = frame.diamondRot * pIn;
-
-  // 1/16 fold: abs on BOTH xy components [4-fold — folds across X and Y
-  // axes], swap if y>x [8-fold — reflection across y=x], reflect across
-  // θ=π/8 line [16-fold].
-  var q = abs(p0.xy);
-  if (q.y > q.x) { q = q.yx; }
-  // π/8 ≈ 22.5°. The reflection-line normal is the vector perpendicular to
-  // the π/8 line pointing into the θ>π/8 half; reflecting points with
-  // dot(q, nRefl) > 0 folds them back into [0°, 22.5°].
-  let nRefl = vec2<f32>(-0.3826834324, 0.9238795325);   // (-sin(π/8), cos(π/8))
-  let d     = dot(q, nRefl);
-  if (d > 0.0) { q = q - 2.0 * d * nRefl; }
-
-  let p = vec3<f32>(q, p0.z);
-  let r = length(q);   // radial distance — for the cylindrical girdle term
-
-  // 7 distance terms. Offsets are in units of diameter; multiply each by
-  // `diameter` so the whole shape scales with the runtime slider.
-  let d_table    = p.z - DIAMOND_H_TOP * diameter;
-  let d_bezel    = dot(p, DIAMOND_BEZEL_N)      - DIAMOND_BEZEL_O      * diameter;
-  let d_star     = dot(p, DIAMOND_STAR_N)       - DIAMOND_STAR_O       * diameter;
-  let d_uhalf    = dot(p, DIAMOND_UPPER_HALF_N) - DIAMOND_UPPER_HALF_O * diameter;
-  let d_girdle   = r                            - DIAMOND_R_GIRDLE     * diameter;
-  let d_lhalf    = dot(p, DIAMOND_LOWER_HALF_N) - DIAMOND_LOWER_HALF_O * diameter;
-  let d_pavmain  = dot(p, DIAMOND_PAVILION_N)   - DIAMOND_PAVILION_O   * diameter;
-
-  return max(max(max(d_table, d_bezel), max(d_star, d_uhalf)),
-             max(d_girdle, max(d_lhalf, d_pavmain)));
-}
+// Diamond (round brilliant cut) SDF + proxy-mesh helpers live in a separate
+// shader unit: src/shaders/diamond.wgsl. It's concatenated at pipeline build
+// time so sdfDiamond / hitDiamondPillIdx / diamondProxyVertex are visible to
+// the dispatch sites below (sceneSdf, fs_main, reprojectHit, vs_proxy). The
+// split keeps dispersion.wgsl focused on trace + SDF framework and leaves
+// Phase B's multi-bounce TIR trace for diamond a clear home.
 
 // Thick square plate as a CONSTANT-THICKNESS bent sheet. The midsurface
 // follows a sin·sin cross wave; both faces of the plate ride that midsurface
@@ -554,25 +495,8 @@ fn hitPlatePillIdx(p: vec3<f32>) -> u32 {
   return best;
 }
 
-// Diamond-specific pill picker for TAA reprojection. Diamond doesn't use the
-// analytical back-exit path (Phase A reuses the generic insideTrace), but the
-// reprojection path still needs to know WHICH diamond instance we hit so the
-// rotation reprojection pivots around the correct pill center. Without this,
-// multi-instance scenes would reproject every diamond around pill[0]'s center,
-// leaving diamonds at any other position with wrong motion vectors and
-// visible ghost trails proportional to their on-screen distance from pill[0].
-fn hitDiamondPillIdx(p: vec3<f32>) -> u32 {
-  let count = min(u32(frame.pillCount), MAX_PILLS);
-  var best:  u32 = 0u;
-  var bestD: f32 = 1e9;
-  for (var i: u32 = 0u; i < count; i = i + 1u) {
-    let pill  = frame.pills[i];
-    let local = p - pill.center;
-    let d     = abs(sdfDiamond(local, frame.diamondSize));
-    if (d < bestD) { bestD = d; best = i; }
-  }
-  return best;
-}
+// (Diamond's `hitDiamondPillIdx` lives in src/shaders/diamond.wgsl alongside
+// sdfDiamond. The dispatch in fs_main below references it directly.)
 
 // Analytical back-face intersection for a rotated wavy plate. Same payoff as
 // `cubeAnalyticExit`: replaces the per-wavelength `insideTrace` (up to 48 SDF
@@ -921,6 +845,17 @@ fn vs_proxy(
   let pill    = frame.pills[ii];
   let shapeId = i32(frame.shape + 0.5);
 
+  // Per-shape vertex budget: 36 for cube/pill/prism/plate (CUBE_VERTS array
+  // size), 90 for diamond (exact convex-hull mesh: 6 table + 16 crown + 8
+  // pavilion = 30 triangles). The draw call always issues 90 vertices per
+  // instance — the extra 54 invocations for non-diamond shapes are trivial
+  // compared to the alternative of a per-shape draw call. The guard prevents
+  // a CUBE_VERTS out-of-bounds access for non-diamond shapes when vi ≥ 36.
+  let maxVerts = select(36u, 90u, shapeId == 4);
+  if (vi >= maxVerts) {
+    return vec4<f32>(2.0, 2.0, 0.5, 1.0);
+  }
+
   // Unit cube corner in [-1, 1]^3 → local box sized to the pill's halfSize
   // (plus edgeR for the rounded rim so the proxy always fully covers the
   // actual shape).
@@ -935,19 +870,14 @@ fn vs_proxy(
                            pill.halfSize.z + frame.waveAmp);
     corner = transpose(frame.plateRot) * (CUBE_VERTS[vi] * extent);
   } else if (shapeId == 4) {
-    // Diamond: size comes from the global `diamondSize` slider, not per-pill
-    // halfSize. A full-diameter cube AABB guarantees coverage under ANY
-    // rotation — every point on the diamond lies within the girdle-radius
-    // sphere (the girdle is the widest part AND its radius exceeds the
-    // pavilion depth, so the whole shape fits inside a sphere of radius
-    // `diamondSize/2`). A tight asymmetric AABB would save a handful of
-    // pixels but requires tracking `H_TOP` vs `H_BOT` and pre-offsetting
-    // the proxy centre when the diamond tilts — not worth the complexity
-    // given the bounding sphere is already conservative and the
-    // `* 1.05` margin absorbs sub-pixel perspective deviations.
-    let d      = frame.diamondSize;
-    let extent = vec3<f32>(d * 0.5, d * 0.5, d * 0.5) * 1.05;
-    corner = transpose(frame.diamondRot) * (CUBE_VERTS[vi] * extent);
+    // Diamond: exact convex-hull proxy mesh (30 triangles, 90 vertices)
+    // synthesized from Tolkowsky constants by diamondProxyVertex in
+    // src/shaders/diamond.wgsl. The split keeps the geometry details next
+    // to sdfDiamond where Phase B's trace work will also land.
+    //
+    // vi < 90 is guaranteed by the maxVerts guard at the top of vs_proxy.
+    let local = diamondProxyVertex(vi, frame.diamondSize);
+    corner    = transpose(frame.diamondRot) * local;
   } else {
     let extent = pill.halfSize + vec3<f32>(pill.edgeR);
     corner     = CUBE_VERTS[vi] * extent;

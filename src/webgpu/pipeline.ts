@@ -4,6 +4,7 @@ import type { History } from './history';
 import type { Intermediate } from './postprocess';
 import vsSrc from '../shaders/fullscreen.wgsl?raw';
 import fsSrc from '../shaders/dispersion.wgsl?raw';
+import diamondSrc from '../shaders/diamond.wgsl?raw';
 import { diamondWgslConstants } from '../math/diamond';
 
 export type Pipeline = {
@@ -24,13 +25,23 @@ export async function createPipeline(
   history: History,
 ): Promise<Pipeline> {
   const { device } = ctx;
-  // Prepend the diamond const block (Tolkowsky-derived plane normals +
-  // offsets, generated in src/math/diamond.ts) so `sdfDiamond` reads the same
-  // numbers the TS side computed. Injecting here rather than hand-copying
-  // them into the WGSL source keeps TS as the single source of truth.
+  // Shader-source composition (order matters for WGSL's single-pass compile):
+  //   1. diamondWgslConstants() — Tolkowsky-derived plane normals + offsets,
+  //      generated in src/math/diamond.ts. Must appear before any WGSL that
+  //      references DIAMOND_*_N / DIAMOND_*_O etc.
+  //   2. fullscreen.wgsl — vertex shader for fs_main / fs_bg passes.
+  //   3. dispersion.wgsl — Frame struct, uniform binding, trace framework
+  //      (sceneSdf, sphereTrace, fs_main, vs_proxy).
+  //   4. diamond.wgsl — sdfDiamond / hitDiamondPillIdx / diamondProxyVertex.
+  //      Placed LAST because it references the Frame struct and uniform
+  //      binding declared in step 3; WGSL resolves its function calls
+  //      (sceneSdf → sdfDiamond, vs_proxy → diamondProxyVertex) across the
+  //      whole module, so forward references out of dispersion.wgsl work.
+  // Injecting at pipeline build time rather than hand-copying the constants
+  // into diamond.wgsl keeps TS as the single source of truth for the geometry.
   const module = device.createShaderModule({
     label: 'dispersion',
-    code:  diamondWgslConstants() + vsSrc + '\n' + fsSrc,
+    code:  diamondWgslConstants() + vsSrc + '\n' + fsSrc + '\n' + diamondSrc,
   });
 
   // Surface WGSL diagnostics immediately — the default WebGPU path swallows compile
@@ -172,13 +183,19 @@ export function encodeScene(
   pass.setPipeline(pl.bg);
   pass.setBindGroup(0, pl.bindGroups[readIndex]);
   pass.draw(3, 1, 0, 0);
-  // Pass 2: per-pill 3D cube proxy meshes (heavy). Covers only the actual
-  // on-screen shape silhouette — for the default 4-pill layout that's ~25 %,
-  // scales with shape size. Reuses the bind group set before the bg pass
-  // because both pipelines share `pipelineLayout`.
+  // Pass 2: per-pill 3D proxy meshes (heavy). Covers only the actual on-screen
+  // shape silhouette — for the default 4-pill layout that's ~25 %, scales with
+  // shape size. Reuses the bind group set before the bg pass because both
+  // pipelines share `pipelineLayout`.
+  //
+  // 90 vertices = max(cube=36, diamond-convex-hull=90). vs_proxy gates by
+  // `shapeId` so non-diamond shapes discard the extra 54 vertices via an
+  // off-screen degenerate position — 54 wasted vertex shader invocations per
+  // instance is cheaper than toggling the draw count per shape (which would
+  // need to live in a host-side branch on the hot render loop).
   if (pillCount > 0) {
     pass.setPipeline(pl.proxy);
-    pass.draw(36, pillCount, 0, 0);
+    pass.draw(90, pillCount, 0, 0);
   }
   pass.end();
 }
