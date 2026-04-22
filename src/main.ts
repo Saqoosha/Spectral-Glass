@@ -1,5 +1,5 @@
 import { initGpu, resizeCanvas, needsSrgbOetf } from './webgpu/device';
-import { createPipeline, draw, rebuildBindGroups } from './webgpu/pipeline';
+import { createPipeline, encodeScene, rebuildBindGroups } from './webgpu/pipeline';
 import { createFrameBuffer, writeFrame } from './webgpu/uniforms';
 import { createPerf } from './webgpu/perf';
 import { loadPhoto, destroyPhoto } from './photo';
@@ -7,6 +7,7 @@ import { attachDrag, defaultPills, type Pill } from './pills';
 import { defaultParams, initUi, mergeParams, type Params } from './ui';
 import { cameraZForFov } from './math/camera';
 import { createHistory, resizeHistory } from './webgpu/history';
+import { createPostProcess, encodePost, resizeIntermediate, writePostFrame } from './webgpu/postprocess';
 import { loadStored, debouncedSaver } from './persistence';
 import { createPerfStats, makeFrameTimer } from './perfStats';
 
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
   const initSize = resizeCanvas(ctx.canvas, ctx.dpr);
   let history    = createHistory(ctx.device, initSize.width, initSize.height);
   const pl       = await createPipeline(ctx, frameBuf, photoNow, history);
+  const post     = await createPostProcess(ctx, initSize.width, initSize.height);
 
   const stored = loadStored();
   const params = mergeParams(defaultParams(), stored?.params ?? {});
@@ -170,6 +172,9 @@ async function main(): Promise<void> {
   window.addEventListener('keyup',   onKeyUp);
 
   const applySrgbOetf = needsSrgbOetf(ctx.format);
+  // applySrgbOetf is derived from the swapchain format and never changes;
+  // write it into the post UBO once at startup instead of every frame.
+  writePostFrame(ctx.device, post, applySrgbOetf);
   const startTime     = performance.now();
   // Wall-clock timestamp of the previous frame's update — used to compute
   // dt for `sceneTime` accumulation. Seeded with `startTime` so the very
@@ -230,6 +235,7 @@ async function main(): Promise<void> {
         history = resized;
         rebuildBindGroups(ctx, pl, frameBuf, photoNow, history);
       }
+      resizeIntermediate(ctx.device, post, width, height);
 
       // Plate forces a square XY face (hy ≡ hx) so pillShort is effectively
       // unused. Plate's wave amplitude is driven by `params.waveAmp` →
@@ -314,7 +320,10 @@ async function main(): Promise<void> {
         cameraZ,
         projection:         PROJECTION_ID[params.projection],
         debugProxy:         params.debugProxy,
-        taaEnabled:         params.taa,
+        // TAA sub-pixel jitter + motion-vector reprojection only enabled when
+        // aaMode === 'taa'. FXAA handles AA in the post pass instead, and
+        // 'none' renders with neither.
+        taaEnabled:         params.aaMode === 'taa',
         sceneTime,
         prevSceneTime,
         // Plate wave params: amp is straight pixels, but the GPU wants an
@@ -325,7 +334,11 @@ async function main(): Promise<void> {
         pills,
       });
 
-      draw(ctx, pl, history, pills.length, perf?.writes, perf ? (enc) => perf.resolve(enc) : undefined);
+      const encoder = ctx.device.createCommandEncoder({ label: 'frame' });
+      encodeScene(pl, history, post.intermediate, pills.length, encoder, perf?.writes);
+      encodePost(ctx, post, encoder, params.aaMode);
+      if (perf) perf.resolve(encoder);
+      ctx.device.queue.submit([encoder.finish()]);
       history.current = history.current === 0 ? 1 : 0;
       // Remember this frame's scene time so the next writeFrame can feed the
       // GPU the rotation state one frame ago for TAA reprojection. This is

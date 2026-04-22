@@ -20,7 +20,7 @@ struct Frame {
   jitter:             f32,
   refractionMode:     f32,
   pillCount:          f32,
-  applySrgbOetf:      f32,  // 1.0 if canvas is non-sRGB and we must encode; 0.0 if -srgb
+  applySrgbOetf:      f32,  // slot kept for UBO layout parity; sRGB encoding lives in postprocess.wgsl now
   shape:              f32,  // 0 = pill (stadium), 1 = prism, 2 = cube (rotates), 3 = plate (wavy, tumbles)
   time:               f32,  // wall-clock seconds since start (always advancing, even while paused). Drives the noise streams: TAA sub-pixel jitter and per-pixel wavelength stratification. Rotation matrices are derived from `sceneTime` (below), NOT from this field — see `cubeRot` / `plateRot` and the time-stream split in src/main.ts.
   historyBlend:       f32,  // 0.2 steady state, 1.0 when the scene changed this frame
@@ -643,20 +643,9 @@ fn hash21(p: vec2<f32>) -> f32 {
   return fract((p3.x + p3.y) * p3.z);
 }
 
-// sRGB OETF (linear → gamma-encoded). Applied iff `frame.applySrgbOetf == 1`,
-// i.e. when the canvas format is non-sRGB (getPreferredCanvasFormat typically
-// returns bgra8unorm) and the hardware won't auto-encode.
-fn linearToSrgb(c: vec3<f32>) -> vec3<f32> {
-  let cutoff = vec3<f32>(0.0031308);
-  let low    = c * 12.92;
-  let high   = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
-  return select(high, low, c <= cutoff);
-}
-
-fn encodeDisplay(c: vec3<f32>) -> vec3<f32> {
-  if (frame.applySrgbOetf > 0.5) { return linearToSrgb(c); }
-  return c;
-}
+// sRGB OETF lives in src/shaders/postprocess.wgsl now — this shader writes
+// linear RGB to the rgba16f intermediate and the post-process pass handles
+// the display encoding in one place (same place FXAA runs).
 
 // ---------- proxy vertex shader ----------
 //
@@ -860,7 +849,7 @@ fn fs_bg(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   let prev  = textureSampleLevel(historyTex, historySmp, uv, 0.0).rgb;
   let blend = mix(prev, bg, frame.historyBlend);
   var o: FsOut;
-  o.color   = vec4<f32>(encodeDisplay(blend), 1.0);
+  o.color   = vec4<f32>(blend, 1.0);
   o.history = vec4<f32>(blend, 1.0);
   return o;
 }
@@ -966,7 +955,7 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     let prevMiss = textureSampleLevel(historyTex, historySmp, uv, 0.0).rgb;
     let blend    = adaptiveBlend(prevMiss, bgFinal);
     var bgOut: FsOut;
-    bgOut.color   = vec4<f32>(encodeDisplay(blend), 1.0);
+    bgOut.color   = vec4<f32>(blend, 1.0);
     bgOut.history = vec4<f32>(blend, 1.0);
     return bgOut;
   }
@@ -991,7 +980,7 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     let prevMiss = textureSampleLevel(historyTex, historySmp, uv, 0.0).rgb;
     let blend    = adaptiveBlend(prevMiss, bgFinal);
     var bgOut: FsOut;
-    bgOut.color   = vec4<f32>(encodeDisplay(blend), 1.0);
+    bgOut.color   = vec4<f32>(blend, 1.0);
     bgOut.history = vec4<f32>(blend, 1.0);
     return bgOut;
   }
@@ -1261,7 +1250,7 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   }
 
   var o: FsOut;
-  o.color   = vec4<f32>(encodeDisplay(blend), 1.0);
+  o.color   = vec4<f32>(blend, 1.0);
   o.history = vec4<f32>(blend, 1.0);
   return o;
 }

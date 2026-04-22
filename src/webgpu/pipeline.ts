@@ -1,6 +1,7 @@
 import type { GpuContext } from './device';
 import type { PhotoTex } from '../photo';
 import type { History } from './history';
+import type { Intermediate } from './postprocess';
 import vsSrc from '../shaders/fullscreen.wgsl?raw';
 import fsSrc from '../shaders/dispersion.wgsl?raw';
 
@@ -21,7 +22,7 @@ export async function createPipeline(
   photo: PhotoTex,
   history: History,
 ): Promise<Pipeline> {
-  const { device, format } = ctx;
+  const { device } = ctx;
   const module = device.createShaderModule({ label: 'dispersion', code: vsSrc + '\n' + fsSrc });
 
   // Surface WGSL diagnostics immediately — the default WebGPU path swallows compile
@@ -37,9 +38,15 @@ export async function createPipeline(
     throw new Error('WGSL shader compile failed — see console for diagnostics');
   }
 
+  // Both color targets are rgba16float now:
+  //   @location(0) → post-process intermediate (linear; FXAA/passthrough
+  //                  emits the display-encoded swapchain output)
+  //   @location(1) → history ping-pong (linear)
+  // This keeps every color path linear and defers sRGB encoding to the
+  // post pass, so FXAA can do perceptual edge detection on the same data.
   const targets: GPUColorTargetState[] = [
-    { format },                 // @location(0) → swapchain
-    { format: 'rgba16float' },  // @location(1) → history (linear)
+    { format: 'rgba16float' },
+    { format: 'rgba16float' },
   ];
 
   // Explicit bind group layout so both pipelines share it AND `frame` is
@@ -123,21 +130,24 @@ export function rebuildBindGroups(
   pl.bindGroups = buildBindGroups(ctx, pl.bg, frameBuf, photo, history);
 }
 
-export function draw(
-  ctx: GpuContext,
-  pl: Pipeline,
-  history: History,
-  pillCount: number,
+/** Encode the scene pass (bg + proxy) into the given command encoder.
+ *  Writes to `intermediate` at @location(0) and history at @location(1).
+ *  Caller submits the encoder after optionally encoding the post pass. */
+export function encodeScene(
+  pl:           Pipeline,
+  history:      History,
+  intermediate: Intermediate,
+  pillCount:    number,
+  encoder:      GPUCommandEncoder,
   timestampWrites?: GPURenderPassTimestampWrites,
-  onCommand?: (encoder: GPUCommandEncoder) => void,
 ): void {
   const readIndex: 0 | 1 = history.current === 0 ? 1 : 0;
   const writeView = history.views[history.current];
-  const encoder = ctx.device.createCommandEncoder({ label: 'draw' });
   const pass = encoder.beginRenderPass({
+    label: 'scene-pass',
     colorAttachments: [
       {
-        view:       ctx.context.getCurrentTexture().createView(),
+        view:       intermediate.view,
         loadOp:     'clear',
         storeOp:    'store',
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
@@ -163,6 +173,4 @@ export function draw(
     pass.draw(36, pillCount, 0, 0);
   }
   pass.end();
-  if (onCommand) onCommand(encoder);
-  ctx.device.queue.submit([encoder.finish()]);
 }

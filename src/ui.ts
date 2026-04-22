@@ -52,6 +52,13 @@ export const PILL_THICK_MAX = 200;
 export const HISTORY_ALPHA_MIN = 0.05;
 export const HISTORY_ALPHA_MAX = 1.0;
 
+/** Antialiasing strategy. `taa` drives in-scene sub-pixel jitter +
+ *  motion-vector history reprojection (converges under motion but can
+ *  add noise around rotating shapes). `fxaa` is a single-frame post
+ *  filter — no history, no jitter, softer edges, zero temporal
+ *  instability. `none` is raw render for A/B comparison. */
+export type AaMode = 'none' | 'fxaa' | 'taa';
+
 export type Params = {
   sampleCount: 3 | 8 | 16 | 32 | 64;
   shape: 'pill' | 'prism' | 'cube' | 'plate';
@@ -67,7 +74,7 @@ export type Params = {
   projection: 'ortho' | 'perspective';
   fov: number;  // full vertical field-of-view in degrees
   debugProxy: boolean;  // tint proxy fragments pink
-  taa: boolean;  // sub-pixel jitter + history EMA antialiasing
+  aaMode: AaMode;
   paused: boolean;  // "Stop the world" — freeze rotation/wave while keeping AA converging
   historyAlpha: number;  // steady-state EMA blend weight (0..1). Lower = more motion blur, less noise; higher = sharper but noisier.
   // Plate-only wave controls. Amp in pixels (midsurface z-displacement);
@@ -306,7 +313,14 @@ export function initUi(
   });
   misc.addBinding(params, 'fov', { min: FOV_MIN, max: FOV_MAX, step: 1, label: 'FOV°' });
   misc.addBinding(params, 'paused', { label: 'Stop the world' });
-  misc.addBinding(params, 'taa', { label: 'TAA' });
+  misc.addBinding(params, 'aaMode', {
+    label: 'AA',
+    options: {
+      None: 'none',
+      FXAA: 'fxaa',
+      TAA:  'taa',
+    },
+  });
   // History blend weight controls the steady-state EMA. Higher = sharper
   // motion (less ghost) but noisier. The shader auto-adapts toward 1.0
   // when it detects color jumps (variance clamp), so for fast motion the
@@ -422,7 +436,7 @@ export function defaultParams(): Params {
     projection: 'perspective',
     fov: 60,
     debugProxy: false,
-    taa: true,
+    aaMode: 'taa',
     paused: false,
     historyAlpha: 0.2,
     waveAmp: 20,

@@ -4,11 +4,16 @@ import {
   PILL_LEN_MAX, PILL_LEN_MIN, PILL_SHORT_MAX, PILL_SHORT_MIN,
   PILL_THICK_MAX, PILL_THICK_MIN,
   WAVE_AMP_MAX, WAVE_AMP_MIN, WAVE_WAVELENGTH_MAX, WAVE_WAVELENGTH_MIN,
-  type Params,
+  type AaMode, type Params,
 } from './ui';
 import type { Pill } from './pills';
 
 const KEY     = 'realrefraction:config';
+// `taa: boolean` was renamed to `aaMode: 'none' | 'fxaa' | 'taa'` without
+// bumping the version — validateParams simply drops the unknown `taa`
+// field on an older payload, so dims/pills survive and aaMode falls back
+// to the default ('taa'). A forced reset would have cost every user
+// their layout for one low-value field.
 const VERSION = 1;
 
 type Stored = {
@@ -28,6 +33,7 @@ const SHAPES        = new Set<Params['shape']>(['pill', 'prism', 'cube', 'plate'
 const MODES         = new Set<Params['refractionMode']>(['exact', 'approx']);
 const PROJECTIONS   = new Set<Params['projection']>(['ortho', 'perspective']);
 const SAMPLE_COUNTS = new Set<Params['sampleCount']>([3, 8, 16, 32, 64]);
+const AA_MODES      = new Set<AaMode>(['none', 'fxaa', 'taa']);
 
 function isFiniteNumber(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
@@ -55,7 +61,7 @@ function validateParams(u: unknown): Partial<Params> {
   if (isFiniteNumber(p.refractionStrength)) out.refractionStrength = p.refractionStrength;
   if (typeof p.temporalJitter === 'boolean') out.temporalJitter    = p.temporalJitter;
   if (typeof p.debugProxy === 'boolean')     out.debugProxy        = p.debugProxy;
-  if (typeof p.taa === 'boolean')            out.taa               = p.taa;
+  if (typeof p.aaMode === 'string' && AA_MODES.has(p.aaMode as AaMode)) out.aaMode = p.aaMode as AaMode;
   if (typeof p.paused === 'boolean')         out.paused            = p.paused;
   if (isFiniteNumber(p.historyAlpha))        out.historyAlpha      = clamp(p.historyAlpha, HISTORY_ALPHA_MIN, HISTORY_ALPHA_MAX);
   // Plate wave controls. Clamp to UI slider bounds so hand-edited storage
