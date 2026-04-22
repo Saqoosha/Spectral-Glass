@@ -1034,8 +1034,16 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     let r2 = refract(r1, nBack, ior);
 
     var refractL: vec3<f32>;
-    if (dot(r2, r2) < 1e-4) {
-      refractL = reflSrc;  // exit TIR → take the external reflection
+    // NaN-aware TIR check: `r2 != r2` is true only for NaN, so if any
+    // component is NaN the negation flips the gate and we take the
+    // reflection branch instead of sampling the photo at a NaN UV (which
+    // is implementation-defined and tends to blow up to either zero or
+    // garbage). `dot(r2, r2) < 1e-4` alone wouldn't catch this because
+    // NaN comparisons always evaluate to false in WGSL.
+    let r2dot   = dot(r2, r2);
+    let r2bad   = r2dot < 1e-4 || r2dot != r2dot;
+    if (r2bad) {
+      refractL = reflSrc;  // exit TIR (or NaN) → take the external reflection
     } else {
       let uvOff = screenUvFromWorld(pExit.xy) + r2.xy * strength;
       refractL  = textureSampleLevel(photoTex, photoSmp, coverUv(uvOff), 0.0).rgb;
@@ -1056,14 +1064,23 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   // 1.0-clamped IOR but defensively guarded), `rgbWeight` is exactly 0 and
   // `max(_, 1e-4)` saves the divide but the result can spike to absurdly
   // large values from tiny `rgbAccum` jitter; downstream that becomes a
-  // saturated white pixel. NaN can also slip in if `nFront` was degenerate
-  // (sceneNormal's guard catches the worst case but float underflow on
-  // very tangent gradients can still make refract() emit NaN). Both
-  // failure modes burn into history if not caught here — a single NaN
-  // sample turns the EMA into NaN every subsequent frame at that pixel
-  // until a scene-change reset.
+  // saturated white pixel. NaN can also slip in from a borderline-
+  // degenerate normal that passed sceneNormal's gradient threshold, or
+  // from a Newton bail in plateAnalyticExit that left `pL` outside the
+  // plate's XY extent and made nBack point in a near-tangent direction
+  // that refracts to a NaN r2.
+  //
+  // We replace bad outputs with the BG photo sample, not zero — these
+  // failure modes happen at single pixels along silhouettes, and
+  // surrounding pixels render as either bg (miss path) or normal
+  // refraction. Substituting the local bg lets the dot vanish into the
+  // silhouette neighbourhood; substituting black would leave a visible
+  // dark speckle. (Without the substitution, NaN burns into history and
+  // becomes permanent garbage at that pixel until a scene-change reset.)
   let raw  = rgbAccum / max(rgbWeight, vec3<f32>(1e-4));
-  let safe = select(raw, vec3<f32>(0.0), raw != raw);  // NaN → 0
+  let isNaN  = raw != raw;
+  let isHuge = raw > vec3<f32>(8.0);
+  let safe   = select(raw, bg, isNaN | isHuge);
   let outRgb = clamp(safe, vec3<f32>(0.0), vec3<f32>(8.0));
 
   // History is stored in rgba16float (linear). Blend in linear space; encode
