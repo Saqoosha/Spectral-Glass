@@ -447,52 +447,10 @@ fn cubeAnalyticExit(roWorld: vec3<f32>, rdWorld: vec3<f32>, pillIdx: u32) -> Cub
   return CubeExit(pWorld, -nOut);
 }
 
-// Crease detector for plate hits. Returns true when the hit point lies on a
-// face junction — typically where the wavy front Z-face meets a flat side
-// X- or Y-face at the plate's XY rim. At those crease pixels the surface
-// normal is mathematically undefined: the finite-diff `sceneNormal` returns
-// a non-zero "average" of the two adjacent face normals, but the resulting
-// refraction direction is meaningless and lands the photo sample at an
-// uncorrelated pixel — visible as a single-pixel speckle along the rim
-// when TAA isn't averaging across sub-pixel positions.
-//
-// Detection: compute the plate's local-frame `q = abs(pShift) - h` (same
-// expression sdfWavyPlate uses internally). Each component of `q` is
-// negative inside the slab, zero on the slab's face, positive outside.
-// If two or more components are within the near-boundary band of zero
-// simultaneously, the hit point sits on the intersection of two faces —
-// a crease. Caller routes those pixels through the bg fallback so they
-// blend cleanly with the surrounding silhouette.
-//
-// The threshold is `HIT_EPS / waveLipFactor`, NOT raw `HIT_EPS`. The
-// sphere-trace stops when `sceneSdf < HIT_EPS`, but `sceneSdf` for plate
-// is `box * waveLipFactor` — so the underlying `box` (and therefore each
-// component of `q`) at hit time is bounded by `HIT_EPS / waveLipFactor`,
-// not by `HIT_EPS` directly. At default wave settings the factor is
-// ≈ 0.92 so the difference is negligible (0.27 vs 0.25), but at the
-// slider extremes (waveAmp = 60, waveWavelength = 60) the factor drops
-// to ≈ 0.16 and the band needs to expand to ~1.6 px to actually catch
-// real creases — without this rescaling the detector silently misses
-// rim hits at high wave parameters and the speckles return.
-fn plateCreaseAt(hitWorld: vec3<f32>, pillIdx: u32) -> bool {
-  let pill = frame.pills[pillIdx];
-  let p    = frame.plateRot * (hitWorld - pill.center);
-  let h    = vec3<f32>(pill.halfSize.x, pill.halfSize.x, pill.halfSize.z);
-  let st   = frame.sceneTime;
-  let waveZ  = frame.waveAmp * sin(frame.waveFreq * p.x + st * 2.0)
-                              * sin(frame.waveFreq * p.y + st * 2.0);
-  // Match sdfWavyPlate: rounded box uses (h - edgeR) as the inner extent.
-  // The geometric crease is now smoothed across the rounded fillet so this
-  // detector basically never fires — kept as defense-in-depth in case wave
-  // parameters drive a configuration the rounded corner can't fully fix.
-  let pShift = vec3<f32>(p.x, p.y, p.z - waveZ);
-  let q      = abs(pShift) - h + vec3<f32>(pill.edgeR);
-  let eps    = HIT_EPS / max(frame.waveLipFactor, 1e-3);
-  let nearX  = i32(abs(q.x) < eps);
-  let nearY  = i32(abs(q.y) < eps);
-  let nearZ  = i32(abs(q.z) < eps);
-  return (nearX + nearY + nearZ) >= 2;
-}
+// (Earlier `plateCreaseAt` detector was retired in favour of the rounded-rim
+// `sdfWavyPlate` — the geometric crease no longer exists, and the sentinel
+// `sceneNormal` degenerate guard catches any residual cases at no extra
+// per-pixel cost.)
 
 // Same idea as hitCubePillIdx but for plates. Picks the plate whose surface
 // is closest (by absolute SDF) to the front-hit point, so `plateAnalyticExit`
@@ -907,6 +865,35 @@ fn fs_bg(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   return o;
 }
 
+// Karis-2014-style single-tap variance clamp + EMA blend. When the new
+// sample disagrees with history (large `diff`) the effective alpha is
+// pushed toward 1.0 so the new sample dominates — kills motion ghost on
+// rotating refractive shapes. Gated by historyBlend so paused-scene
+// progressive averaging (`α = max(1/n, 1/256)` → 0) stays unfaded.
+//
+// Used by both the bg-fallback path (for hit↔miss transitions at
+// silhouettes) and the hit-path EMA at the end of fs_main.
+fn adaptiveBlend(prev: vec3<f32>, next: vec3<f32>) -> vec3<f32> {
+  let diff  = length(next - prev);
+  let gate  = smoothstep(0.05, 0.15, frame.historyBlend);
+  let mixT  = gate * smoothstep(0.05, 0.30, diff);
+  let alpha = mix(frame.historyBlend, 1.0, mixT);
+  return mix(prev, next, alpha);
+}
+
+// Back-face exit dispatcher. Centralises the entry-bias trick (push the
+// front-hit point one MIN_STEP inward along the refracted ray so the
+// analytic exits' slab math doesn't divide 0/0 → silent wrong-axis pick →
+// edge speckle) plus the cube/plate/other dispatch — both used by the
+// hero-mode shared trace and the per-wavelength loop.
+fn backExit(hitP: vec3<f32>, r1: vec3<f32>, shapeId: i32, pillIdx: u32, internalMax: f32) -> CubeExit {
+  let roEntry = hitP + r1 * MIN_STEP;
+  if (shapeId == 2) { return cubeAnalyticExit(roEntry, r1, pillIdx); }
+  if (shapeId == 3) { return plateAnalyticExit(roEntry, r1, pillIdx); }
+  let pExit = insideTrace(hitP, r1, internalMax);
+  return CubeExit(pExit, -sceneNormal(pExit));
+}
+
 @fragment
 fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   // DOM-top-origin pixel coords so they match pointer events and defaultPills.
@@ -951,66 +938,61 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   let h    = sphereTrace(ro, rd, maxT);
   let bg   = textureSampleLevel(photoTex, photoSmp, coverUv(uv), 0.0).rgb;
 
-  // Shape-dispatch + analytic-exit pill index are needed BOTH for the
-  // bg-fallback gate (plate crease detection runs against the hit pill's
-  // SDF components) and for the wavelength loop further down. Compute
-  // once up front; the cube/plate idx scan is gated on a hit existing.
+  // Helper for the "render as background" path — used for miss, for hits
+  // whose front normal came out degenerate, and for the no-data fallback at
+  // the end of the hit path. Wraps the bg sample in `adaptiveBlend` so a
+  // pixel transitioning from hit-path refraction to bg also gets the same
+  // variance clamp the hit path uses (without it, 20% of stale refraction
+  // colour bleeds into each frame's blend → visible silhouette flicker).
+  // `frame.debugProxy` tints these pixels pink so the proxy over-coverage
+  // halo is visible in the UI's "Show proxy" mode.
+  // (kept inline rather than a helper because it returns from fs_main; WGSL
+  // can't early-return from a callee.)
+
   let shapeId  = i32(frame.shape + 0.5);
   let isCube   = shapeId == 2;
   let isPlate  = shapeId == 3;
   let hasAnalyticExit = isCube || isPlate;  // used by reprojectHit gate below
 
-  var analyticIdx: u32 = 0u;
-  if (h.ok && isCube) {
-    analyticIdx = hitCubePillIdx(h.p);
-  } else if (h.ok && isPlate) {
-    analyticIdx = hitPlatePillIdx(h.p);
-  }
-
-  // Compute front normal up front so we can route degenerate-gradient hits
-  // through the same bg fallback path as misses. `sceneNormal` returns the
-  // zero vector when the gradient is too small to normalise (silhouette /
-  // wave-crest singularity); using an arbitrary fallback normal there
-  // produces a "valid but wrong" refraction that visibly differs from the
-  // surrounding correct refractions, leaving dot speckles along the edge.
-  // Treating it as bg blends seamlessly with the silhouette neighbourhood.
-  let nFront        = select(vec3<f32>(0.0), sceneNormal(h.p), h.ok);
-  let normalIsValid = dot(nFront, nFront) > 0.5;
-  // Plate-only crease test: the hit point sits on the intersection of two
-  // faces (e.g. front Z meets a side X / Y face at the plate's XY rim).
-  // Normal is mathematically undefined there; finite-diff returns a non-
-  // zero average that produces a meaningless refraction. Same bg fallback
-  // as misses keeps the rim clean.
-  let atCrease = h.ok && isPlate && plateCreaseAt(h.p, analyticIdx);
-
-  if (!h.ok || !normalIsValid || atCrease) {
-    // Proxy covered this pixel but no usable surface was reached — miss,
-    // degenerate-normal hit, or a plate crease. Either way, render as
-    // background. In debug mode, tint these MORE pinkly so the
-    // over-coverage "halo" around the silhouette is visible.
+  // Bg-fallback short-circuit. Run BEFORE `sceneNormal` because WGSL `select`
+  // evaluates both arms — wrapping `sceneNormal(h.p)` in select(_, _, h.ok)
+  // would still cost 6 SDF evals per miss pixel, and the proxy mesh
+  // intentionally over-covers the silhouette so misses are common.
+  if (!h.ok) {
     var bgFinal = bg;
     if (frame.debugProxy > 0.5) {
       bgFinal = mix(bg, vec3<f32>(1.0, 0.3, 0.7), 0.5);
     }
-    // Same EMA blend as both fs_bg and the hit path — skipping it here would
-    // leave a 1-frame temporal discontinuity along the proxy-over-cover halo.
-    // Variance clamp also runs here: when a previously-hit pixel falls into
-    // the bg fallback (e.g. cube tumbles past so a refraction-coloured
-    // history pixel becomes a miss), the |bgFinal - prevMiss| diff is
-    // large and the clamp adapts α toward 1.0 — the bg sample replaces the
-    // stale refraction in one frame instead of leaving a 5-frame trail.
-    // Without this, silhouette pixels alternating between hit and bg paths
-    // would visibly flicker as 20 % of the wrong-side colour bleeds into
-    // each frame's blend.
-    let prevMiss   = textureSampleLevel(historyTex, historySmp, uv, 0.0).rgb;
-    let diffMiss   = length(bgFinal - prevMiss);
-    let gateMiss   = smoothstep(0.05, 0.15, frame.historyBlend);
-    let mixMiss    = gateMiss * smoothstep(0.05, 0.30, diffMiss);
-    let alphaMiss  = mix(frame.historyBlend, 1.0, mixMiss);
-    let blendMiss  = mix(prevMiss, bgFinal, alphaMiss);
+    let prevMiss = textureSampleLevel(historyTex, historySmp, uv, 0.0).rgb;
+    let blend    = adaptiveBlend(prevMiss, bgFinal);
     var bgOut: FsOut;
-    bgOut.color   = vec4<f32>(encodeDisplay(blendMiss), 1.0);
-    bgOut.history = vec4<f32>(blendMiss, 1.0);
+    bgOut.color   = vec4<f32>(encodeDisplay(blend), 1.0);
+    bgOut.history = vec4<f32>(blend, 1.0);
+    return bgOut;
+  }
+
+  // Hit path. Pill-index scan is per-shape; gated on h.ok above so misses
+  // skip it entirely.
+  var analyticIdx: u32 = 0u;
+  if      (isCube)  { analyticIdx = hitCubePillIdx(h.p); }
+  else if (isPlate) { analyticIdx = hitPlatePillIdx(h.p); }
+
+  // `sceneNormal` returns the zero vector when the local gradient is too
+  // small to normalise (silhouette / wave-crest singularity). Falling back
+  // to an arbitrary normal would produce visible-but-wrong refraction
+  // colours; routing those pixels through the bg path instead lets them
+  // blend cleanly with the silhouette neighbourhood.
+  let nFront = sceneNormal(h.p);
+  if (dot(nFront, nFront) <= 0.5) {
+    var bgFinal = bg;
+    if (frame.debugProxy > 0.5) {
+      bgFinal = mix(bg, vec3<f32>(1.0, 0.3, 0.7), 0.5);
+    }
+    let prevMiss = textureSampleLevel(historyTex, historySmp, uv, 0.0).rgb;
+    let blend    = adaptiveBlend(prevMiss, bgFinal);
+    var bgOut: FsOut;
+    bgOut.color   = vec4<f32>(encodeDisplay(blend), 1.0);
+    bgOut.history = vec4<f32>(blend, 1.0);
     return bgOut;
   }
 
@@ -1041,31 +1023,9 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     // would misbehave with r1hero ≈ 0: cube/plateAnalyticExit divide by rdL
     // and would emit NaN, insideTrace would stall with no forward progress.
     if (dot(r1hero, r1hero) >= 1e-4) {
-      // Bias the entry point inward by one MIN_STEP along the refracted ray.
-      // The raw front hit `h.p` lives ON the surface (within HIT_EPS), so
-      // the slab intersection in the analytic exits computes
-      // `(±h - roL) / rdL` with `±h - roL ≈ 0` when ro is right at the
-      // boundary. That divides to NaN, and WGSL's `<=` against NaN is
-      // silently false — the axis selection then picks the wrong slab,
-      // sending Newton chasing a Z exit when the ray actually leaves
-      // through X / Y. The wrong exit point projects to a refracted UV
-      // somewhere unrelated, the mirror-repeat photo sampler returns
-      // whatever colour happens to live at that wrong UV (white if it
-      // lands on bright photo content, black if dark), and the result
-      // shows as a single-pixel speckle along plate/cube internal edges.
-      let roEntry = h.p + r1hero * MIN_STEP;
-      if (isCube) {
-        let ex = cubeAnalyticExit(roEntry, r1hero, analyticIdx);
-        sharedExit  = ex.pWorld;
-        sharedNBack = ex.nBack;
-      } else if (isPlate) {
-        let ex = plateAnalyticExit(roEntry, r1hero, analyticIdx);
-        sharedExit  = ex.pWorld;
-        sharedNBack = ex.nBack;
-      } else {
-        sharedExit  = insideTrace(h.p, r1hero, internalMax);
-        sharedNBack = -sceneNormal(sharedExit);
-      }
+      let ex = backExit(h.p, r1hero, shapeId, analyticIdx, internalMax);
+      sharedExit  = ex.pWorld;
+      sharedNBack = ex.nBack;
     }
   }
 
@@ -1132,22 +1092,9 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     var pExit = sharedExit;
     var nBack = sharedNBack;
     if (!useHero) {
-      // Same entry-bias trick as the hero branch above — see that block
-      // for the full rationale (boundary `h.p` → 0/0 in slab intersection
-      // → silently-wrong axis selection → speckle dots along edges).
-      let roEntry = h.p + r1 * MIN_STEP;
-      if (isCube) {
-        let ex = cubeAnalyticExit(roEntry, r1, analyticIdx);
-        pExit = ex.pWorld;
-        nBack = ex.nBack;
-      } else if (isPlate) {
-        let ex = plateAnalyticExit(roEntry, r1, analyticIdx);
-        pExit = ex.pWorld;
-        nBack = ex.nBack;
-      } else {
-        pExit = insideTrace(h.p, r1, internalMax);
-        nBack = -sceneNormal(pExit);
-      }
+      let ex = backExit(h.p, r1, shapeId, analyticIdx, internalMax);
+      pExit = ex.pWorld;
+      nBack = ex.nBack;
     }
     let r2 = refract(r1, nBack, ior);
 
@@ -1213,15 +1160,13 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   // silhouette neighbourhood; substituting black would leave a visible
   // dark speckle. (Without the substitution, NaN burns into history and
   // becomes permanent garbage at that pixel until a scene-change reset.)
-  let raw    = rgbAccum / max(rgbWeight, vec3<f32>(1e-4));
-  // Whole-pixel decision (any() reduces vec3<bool> to scalar) so a single
-  // bad channel takes the entire pixel to bg — otherwise component-wise
-  // select would replace e.g. just R with bg.r and leave G/B as the raw
-  // (likely also bad) values, producing an off-coloured speckle that's
-  // worse than a clean bg fallback. The `select(_, bg, vec3<bool>(flag))`
-  // pattern broadcasts the scalar back across all three channels.
-  let badPx  = any(raw != raw) || any(raw > vec3<f32>(8.0));
-  let safe   = select(raw, bg, vec3<bool>(badPx));
+  let raw     = rgbAccum / max(rgbWeight, vec3<f32>(1e-4));
+  // NaN-only whole-pixel guard. The `any(...)` reduces vec3<bool> to a
+  // scalar so a single bad channel sends the entire pixel to bg (otherwise
+  // component-wise select would replace e.g. just R, leaving G/B as the
+  // raw NaN-y values → off-coloured speckle worse than a clean fallback).
+  // Magnitude is bounded by the clamp on the next line.
+  let safe    = select(raw, bg, vec3<bool>(any(raw != raw)));
   let clamped = clamp(safe, vec3<f32>(0.0), vec3<f32>(8.0));
 
   // Silhouette anti-alias by blending toward bg at near-grazing angles.
@@ -1248,8 +1193,7 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   // toward bg over time — the same failure mode the variance clamp
   // is also gated against.
   let silhouetteGate = smoothstep(0.05, 0.15, frame.historyBlend);
-  let silhouetteRaw  = smoothstep(0.0, 0.05, cosT);
-  let silhouetteMix  = mix(1.0, silhouetteRaw, silhouetteGate);
+  let silhouetteMix  = mix(1.0, smoothstep(0.0, 0.05, cosT), silhouetteGate);
   let outRgb = mix(bg, clamped, silhouetteMix);
 
   // History is stored in rgba16float (linear). Blend in linear space; encode
@@ -1271,27 +1215,8 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   }
   let prev  = textureSampleLevel(historyTex, historySmp, historyUv, 0.0).rgb;
 
-  // Adaptive variance clamp — Karis 2014 in spirit, single-tap variant.
-  // Refractive shapes (cube, plate) change view-dependent color frame-to-
-  // frame even when motion-vector reprojection lands on the right pixel
-  // (the surface point is the same but the refracted UV moves with the
-  // surface normal). Pure EMA blending of these wildly-changing samples
-  // produces visible ghost trails on rotating plates.
-  //
-  // Rule: if the new sample disagrees with history (large `diff`), bias
-  // the effective alpha toward 1.0 so the new sample dominates. For
-  // small diffs (steady-state noise floor) keep the user's chosen alpha
-  // so wavelength stratification still gets averaged out.
-  //
-  // Gated on `historyBlend > ~0.1` so paused-scene progressive averaging
-  // (`α = max(1/n, 1/256)` → 0) isn't wrecked: with a tiny historyBlend
-  // we WANT to fold in the new sample at exactly that weight, not a
-  // motion-bumped weight.
-  let diff       = length(outRgb - prev);
-  let clampGate  = smoothstep(0.05, 0.15, frame.historyBlend);
-  let clampMix   = clampGate * smoothstep(0.05, 0.30, diff);
-  let effectiveA = mix(frame.historyBlend, 1.0, clampMix);
-  var blend      = mix(prev, outRgb, effectiveA);
+  // EMA blend with adaptive variance clamp — see `adaptiveBlend` above.
+  var blend = adaptiveBlend(prev, outRgb);
 
   // Debug: tint every proxy fragment pink so the proxy silhouette is visible.
   // This path (ray hit the cube) gets a light tint; the miss path above gets
