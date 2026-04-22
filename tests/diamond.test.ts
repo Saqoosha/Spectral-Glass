@@ -119,10 +119,13 @@ describe('diamond geometry (Tolkowsky ideal)', () => {
     expect(DIAMOND_INTERNALS.R_GIRDLE).toBeCloseTo(0.5, 10);
   });
 
-  it('crown height matches tan(crown_angle) × (girdle − table radial gap)', () => {
-    // Regression pin on the derived H_CROWN. Drift here probably means
-    // TABLE_RATIO or CROWN_ANGLE_DEG moved; test double-checks both.
-    const expected = (DIAMOND_INTERNALS.R_GIRDLE - DIAMOND_INTERNALS.R_TABLE_APOTHEM)
+  it('crown height matches tan(crown_angle) × (girdle − table-vertex radial gap)', () => {
+    // Regression pin on the derived H_CROWN. The bezel axis runs from a
+    // table VERTEX (not the edge midpoint) down to a girdle point at the
+    // same azimuth, so the horizontal run is (R_GIRDLE − R_TABLE_VERTEX).
+    // With TABLE_RATIO = 0.53 vertex-to-vertex and CROWN_ANGLE = 34.5°,
+    // this lands at Tolkowsky's 16.2 % crown height.
+    const expected = (DIAMOND_INTERNALS.R_GIRDLE - DIAMOND_INTERNALS.R_TABLE_VERTEX)
       * Math.tan(DIAMOND_INTERNALS.CROWN_ANGLE_DEG * Math.PI / 180);
     expect(DIAMOND_INTERNALS.H_CROWN).toBeCloseTo(expected, 8);
     // And land near the gemology book value of ~0.162.
@@ -154,9 +157,12 @@ describe('diamond geometry (Tolkowsky ideal)', () => {
     }
   });
 
-  it('bezel + pavilion normals have no Y component (centred at φ=0)', () => {
-    expect(DIAMOND_INTERNALS.planes.bezel.ny).toBeCloseTo(0, 10);
-    expect(DIAMOND_INTERNALS.planes.pavilion.ny).toBeCloseTo(0, 10);
+  it('star normal has no Y component (centred at φ=0, on the table edge)', () => {
+    // Bezel and pavilion sit at φ=π/8 (through a table vertex), so their
+    // normals DO have non-zero Y. Star is the only facet class whose
+    // centreline is on the φ=0 mirror — its normal Y component collapses
+    // because sin(0) = 0.
+    expect(DIAMOND_INTERNALS.planes.star.ny).toBeCloseTo(0, 10);
   });
 
   it('crown normals have +Z, pavilion normals have -Z', () => {
@@ -167,44 +173,42 @@ describe('diamond geometry (Tolkowsky ideal)', () => {
     expect(DIAMOND_INTERNALS.planes.pavilion.nz).toBeLessThan(0);
   });
 
-  it('bezel plane passes through the girdle-top rim at φ=0', () => {
-    // Anchor is (R_GIRDLE, 0, +H_GIRDLE_HALF); plane offset should be the
-    // dot product of that anchor with the normal (sin 34.5°, 0, cos 34.5°).
-    // Catches accidental anchor typos (e.g. switching sign of H_GIRDLE_HALF,
-    // which would shift the bezel vertically and break the crown silhouette
-    // with no visible test failure today — unit-length + sign tests pass
-    // regardless).
+  it('bezel plane passes through the girdle-top rim at φ=π/8', () => {
+    // Bezel is centred at the table-vertex direction φ = π/8 (where the kite
+    // radiates from). Plane anchor is the girdle-top point at that same
+    // azimuth: (R_GIRDLE·cos(π/8), R_GIRDLE·sin(π/8), +H_GIRDLE_HALF).
+    // Because cos²(π/8) + sin²(π/8) = 1, dot(anchor, normal) collapses to
+    // the clean formula R_GIRDLE · sin(α) + H_GIRDLE_HALF · cos(α).
     const { R_GIRDLE, planes } = DIAMOND_INTERNALS;
-    const alpha  = 34.5 * Math.PI / 180;
+    const alpha    = 34.5 * Math.PI / 180;
     const expected = R_GIRDLE * Math.sin(alpha) + 0.01 * Math.cos(alpha);
     expect(planes.bezel.offset).toBeCloseTo(expected, 8);
   });
 
-  it('pavilion plane passes through the girdle-bottom rim at φ=0', () => {
-    // Symmetric check for the pavilion: anchor is (R_GIRDLE, 0, -H_GIRDLE_HALF)
-    // and the outward normal has -Z component (pavilion tilts downward).
-    // `planeFromAngles` computes offset = dot(anchor, normal) — for the
-    // pavilion that's R_GIRDLE · sin(40.75°) + (-0.01) · (-cos(40.75°)).
+  it('pavilion plane passes through the girdle-bottom rim at φ=π/8', () => {
+    // Pavilion mains share the bezel's azimuth (φ = π/8) as is standard
+    // for a brilliant cut. Same formula as the bezel test thanks to the
+    // cos²+sin² simplification; the -Z sign on the normal component cancels
+    // with the -H_GIRDLE_HALF in the anchor, giving the same clean form.
     const { R_GIRDLE, planes } = DIAMOND_INTERNALS;
-    const alpha  = 40.75 * Math.PI / 180;
+    const alpha    = 40.75 * Math.PI / 180;
     const expected = R_GIRDLE * Math.sin(alpha) + 0.01 * Math.cos(alpha);
     expect(planes.pavilion.offset).toBeCloseTo(expected, 8);
   });
 
-  it('star plane passes through a table vertex on the mirror boundary (φ=π/8)', () => {
-    // Star anchor = (R_TABLE_VERTEX·cos(π/8), R_TABLE_VERTEX·sin(π/8), H_TOP).
-    // Normal = (cos(π/8)·sin(22°), sin(π/8)·sin(22°), cos(22°)).
-    // Offset = dot(anchor, normal), which simplifies to
-    //   R_TABLE_VERTEX · sin(22°) + H_TOP · cos(22°)
-    // (the cos²+sin² collapses the in-plane dot to R_TABLE_VERTEX · sin 22°).
+  it('star plane passes through the table-edge midpoint at φ=0', () => {
+    // Star facets sit DIRECTLY OUTSIDE a table edge: base on the edge,
+    // apex pointing outward onto the bezel surface. Centreline along
+    // φ=0, so the normal has no Y component. Plane passes through the
+    // edge midpoint (R_TABLE_APOTHEM, 0, H_TOP).
     //
-    // This pins the star-plane anchor on R_TABLE_VERTEX specifically — catches
-    // a silent revert from flat-to-flat TABLE_RATIO convention back to vertex-
-    // to-vertex, which would otherwise pass every other plane test because
-    // only the star plane uses R_TABLE_VERTEX in its anchor.
-    const { R_TABLE_VERTEX, H_TOP, planes } = DIAMOND_INTERNALS;
+    // Pins the star-plane anchor on R_TABLE_APOTHEM — catches a silent
+    // swap back to the old "star at table vertex" convention which would
+    // push the facet 0.02·d too far outward and produce a visibly wrong
+    // crown faceting pattern.
+    const { R_TABLE_APOTHEM, H_TOP, planes } = DIAMOND_INTERNALS;
     const alpha    = 22.0 * Math.PI / 180;
-    const expected = R_TABLE_VERTEX * Math.sin(alpha) + H_TOP * Math.cos(alpha);
+    const expected = R_TABLE_APOTHEM * Math.sin(alpha) + H_TOP * Math.cos(alpha);
     expect(planes.star.offset).toBeCloseTo(expected, 8);
   });
 
@@ -252,9 +256,10 @@ describe('diamondWgslConstants', () => {
 
   it('radii are ordered table_apothem < table_vertex < girdle < girdle_r_circ', () => {
     // The octagon geometry demands r_apothem = r_vertex · cos(π/8), so the
-    // strict ordering is a direct cross-check on the flat-to-flat table
-    // convention (TABLE_RATIO applies to apothem, not vertex radius) and on
-    // the circumscribing-octagon formula for the proxy's girdle ring.
+    // strict ordering is a direct cross-check on the vertex-to-vertex table
+    // convention (TABLE_RATIO applies to the vertex radius, per GIA's
+    // "bezel point to bezel point" definition) and on the circumscribing-
+    // octagon formula for the proxy's girdle ring.
     const i = DIAMOND_INTERNALS;
     expect(i.R_TABLE_APOTHEM).toBeLessThan(i.R_TABLE_VERTEX);
     expect(i.R_TABLE_VERTEX).toBeLessThan(i.R_GIRDLE);
@@ -262,11 +267,11 @@ describe('diamondWgslConstants', () => {
     // Pin the circumscribing-octagon formula — the proxy mesh's over/under
     // coverage analysis depends on it exactly.
     expect(i.GIRDLE_R_CIRC / i.R_GIRDLE).toBeCloseTo(1 / Math.cos(Math.PI / 8), 8);
-    // Flat-to-flat convention: R_TABLE_APOTHEM = R_GIRDLE · TABLE_RATIO
-    // (not R_TABLE_VERTEX = R_GIRDLE · TABLE_RATIO). Catches a future
-    // accidental revert to vertex-to-vertex, which would silently make the
-    // rendered table narrower than a real brilliant cut.
-    expect(i.R_TABLE_APOTHEM / i.R_GIRDLE).toBeCloseTo(0.53, 8);
+    // Vertex-to-vertex convention: R_TABLE_VERTEX = R_GIRDLE · TABLE_RATIO.
+    // Catches a future accidental revert to flat-to-flat (which would
+    // silently make the rendered table ~8 % larger and break the Tolkowsky
+    // crown-height derivation).
+    expect(i.R_TABLE_VERTEX / i.R_GIRDLE).toBeCloseTo(0.53, 8);
   });
 
   it('formats vectors as vec3<f32>(x, y, z)', () => {

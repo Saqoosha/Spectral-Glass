@@ -27,19 +27,17 @@ export const DIAMOND_SIZE_MAX = 400;
 
 // ---------- Tolkowsky ideal cut (1919) ----------
 
-/** Table size as a fraction of the girdle diameter, measured FLAT-TO-FLAT
- *  across the octagonal table's apothems (= R_TABLE_APOTHEM / R_GIRDLE).
- *  This is the GIA / Tolkowsky convention; grading reports quote this value.
- *  The vertex-to-vertex radius R_TABLE_VERTEX = R_TABLE_APOTHEM / cos(π/8) ≈
- *  1.082 · R_TABLE_APOTHEM is derived from it — that's the radius the star
- *  plane anchor uses (the star plane passes through a table vertex on the
- *  mirror boundary).
+/** Table size as a fraction of the girdle diameter, measured vertex-to-vertex
+ *  across the octagonal table — the DIAGONAL across opposite table corners.
+ *  This is GIA's convention: "table percentage" averages four measurements
+ *  from bezel point to bezel point, where the bezel points ARE the table's
+ *  octagonal vertices. So TABLE_RATIO = 2·R_TABLE_VERTEX / diameter.
  *
- *  Tolkowsky's "ideal cut" prescribes 53 % here; GIA "Excellent" grade lies
- *  in 52–62 %. Using the vertex-to-vertex convention instead would give a
- *  visually too-small table for the same nominal ratio, producing a cut that
- *  reads like a different gem (closer to an "Asscher" or thin-table style)
- *  rather than a round brilliant. */
+ *  The apothem (flat-to-flat, perpendicular edge distance) derives as
+ *  R_TABLE_APOTHEM = R_TABLE_VERTEX · cos(π/8) ≈ 0.924 · R_TABLE_VERTEX.
+ *
+ *  Tolkowsky's 1919 "ideal cut" prescribes 53 % here; GIA's "Excellent"
+ *  grade spans 52–62 %. */
 const TABLE_RATIO = 0.53;
 /** Crown main (bezel) facet angle measured from the horizontal girdle plane. */
 const CROWN_ANGLE_DEG = 34.5;
@@ -59,14 +57,31 @@ const LOWER_HALF_ANGLE_DEG = 43.0;
  *  within GIA's acceptable range for commercial cuts. */
 const GIRDLE_THICKNESS_RATIO = 0.02;
 
-// Angular positions (azimuthal) of each facet class's centerline inside the
-// 22.5° (π/8) fundamental wedge after 1/16 symmetry folding:
-//   bezel, pavilion main → θ = 0
-//   star                 → θ = π/8  (on the mirror boundary)
-//   upper half, lower half → θ = π/16 (mid-wedge)
-const PHI_BEZEL      = 0;
-const PHI_PAVILION   = 0;
-const PHI_STAR       = Math.PI / 8;
+// Angular positions (azimuthal) of each facet class's centreline. Per the
+// GIA brilliant-cut anatomy:
+//   - Table has 8 vertices (at φ = π/8 + k·π/4) and 8 edges (at k·π/4).
+//   - BEZEL kites radiate OUT from each table vertex, so their centreline
+//     runs through the table vertex. φ_bezel = π/8.
+//   - STAR triangles sit DIRECTLY OUTSIDE each table edge (base ON the
+//     table edge), so their centreline runs through the edge midpoint.
+//     φ_star = 0.
+//   - PAVILION main facets sit directly beneath the BEZEL kites (they
+//     share the crown-side plane azimuth), so φ_pavilion = φ_bezel = π/8.
+//   - UPPER / LOWER GIRDLE HALVES flank the bezels and pavilion mains
+//     at ±π/16 from each; a single representative in the fundamental
+//     wedge sits at φ = π/16.
+//
+// After the 1/16 D_8 fold the fundamental wedge is [0, π/8]. The bezel and
+// pavilion main centrelines land ON the wedge's upper boundary (φ = π/8,
+// the mirror line between adjacent octants). The star centreline lands on
+// the lower boundary (φ = 0, the mirror line within an octant). Upper /
+// lower halves sit mid-wedge. Placing every facet on a mirror line (or
+// midway between them) means each plane's outward normal is symmetric
+// under the fold, so the fold never evaluates a plane at a point it
+// doesn't cover.
+const PHI_BEZEL      = Math.PI / 8;
+const PHI_PAVILION   = Math.PI / 8;
+const PHI_STAR       = 0;
 const PHI_UPPER_HALF = Math.PI / 16;
 const PHI_LOWER_HALF = Math.PI / 16;
 
@@ -80,19 +95,21 @@ const UPPER_HALF_ANGLE = UPPER_HALF_ANGLE_DEG * DEG;
 const LOWER_HALF_ANGLE = LOWER_HALF_ANGLE_DEG * DEG;
 
 const R_GIRDLE        = 0.5;                                         // girdle outer radius at unit diameter
-// TABLE_RATIO is flat-to-flat (GIA / Tolkowsky convention — see constant doc
-// above), so it's the APOTHEM (perpendicular half-width) of the octagonal
-// table, not the vertex-to-vertex radius. The vertex radius, used by the
-// star plane anchor and the proxy mesh's table-corner vertices, is derived
-// by the octagon geometry relation r_vertex = r_apothem / cos(π/8).
-const R_TABLE_APOTHEM = R_GIRDLE * TABLE_RATIO;                      // half the flat-to-flat table width (Tolkowsky "table %")
-const R_TABLE_VERTEX  = R_TABLE_APOTHEM / Math.cos(Math.PI / 8);     // radius to a table octagon corner
+// TABLE_RATIO is vertex-to-vertex (GIA "bezel point to bezel point", see
+// constant doc above), so it's the radius to the table's octagonal CORNERS.
+// The flat-to-flat apothem derives as r_apothem = r_vertex · cos(π/8).
+const R_TABLE_VERTEX  = R_GIRDLE * TABLE_RATIO;                      // radius to a table octagon corner (Tolkowsky "table %")
+const R_TABLE_APOTHEM = R_TABLE_VERTEX * Math.cos(Math.PI / 8);      // half the flat-to-flat table width
 
-/** Crown height from girdle-top to table plane. Derived from the bezel angle
- *  and the radial gap (girdle outer radius − table apothem), keeping the
- *  bezel face at exactly CROWN_ANGLE_DEG above horizontal. Usually lands at
- *  ~0.161 · diameter. */
-const H_CROWN    = (R_GIRDLE - R_TABLE_APOTHEM) * Math.tan(CROWN_ANGLE);
+/** Crown height from girdle-top to table plane. The bezel axis runs from
+ *  the table VERTEX at (R_TABLE_VERTEX·cos(π/8), …, H_TOP) down to the
+ *  girdle-top POINT at (R_GIRDLE·cos(π/8), …, H_GIRDLE_HALF) — both at the
+ *  same φ = π/8. Horizontal run along that axis is R_GIRDLE −
+ *  R_TABLE_VERTEX, and the vertical drop is H_CROWN, so
+ *  tan(CROWN_ANGLE) = H_CROWN / (R_GIRDLE − R_TABLE_VERTEX).
+ *  With TABLE_RATIO = 0.53 and CROWN_ANGLE = 34.5°, H_CROWN ≈ 0.162 — the
+ *  classic Tolkowsky value. */
+const H_CROWN    = (R_GIRDLE - R_TABLE_VERTEX) * Math.tan(CROWN_ANGLE);
 /** Pavilion depth from girdle-bottom to culet apex. At ~0.431 · diameter the
  *  pavilion sits well past the diameter's 40% mark where TIR behaviour is
  *  optimal — Phase B will exercise this. */
@@ -153,21 +170,26 @@ function planeFromAngles(
 
 // Anchors chosen for each facet class so the plane passes through a
 // physically plausible point on the diamond (girdle rim, table vertex, etc.).
-// Numbers converge to Tolkowsky-close visuals; Phase B can tighten per-facet
-// anchors if the silhouette needs it.
+// See the φ_* constants above for the geometric rationale behind each
+// facet's centreline orientation.
 
-/** Bezel (crown main) — passes through the bezel's lower tip on the
- *  girdle-top at its centreline (φ=0). */
+/** Bezel (crown main) — the kite radiates out from a table VERTEX. Plane
+ *  passes through the girdle-top POINT at the same azimuth (φ = π/8); by
+ *  H_CROWN's derivation it also passes through the table vertex itself. */
 const BEZEL_PLANE:   FacetPlane = planeFromAngles(PHI_BEZEL,   CROWN_ANGLE,      +1,
-  [R_GIRDLE, 0, H_GIRDLE_HALF]);
+  [R_GIRDLE * Math.cos(PHI_BEZEL), R_GIRDLE * Math.sin(PHI_BEZEL), H_GIRDLE_HALF]);
 
-/** Star — passes through a table vertex on the mirror boundary (φ=π/8).
- *  The table vertex is at radius R_TABLE_VERTEX, z = H_TOP. */
+/** Star — its BASE lies on a TABLE EDGE (the segment between two adjacent
+ *  table vertices at φ = ±π/8 around the edge midpoint at φ = 0). With the
+ *  plane's normal having no Y component (symmetric about φ = 0), anchoring
+ *  at the edge midpoint (R_TABLE_APOTHEM, 0, H_TOP) is equivalent to
+ *  anchoring at either table vertex — the Y offsets cancel. */
 const STAR_PLANE:    FacetPlane = planeFromAngles(PHI_STAR,    STAR_ANGLE,       +1,
-  [R_TABLE_VERTEX * Math.cos(PHI_STAR), R_TABLE_VERTEX * Math.sin(PHI_STAR), H_TOP]);
+  [R_TABLE_APOTHEM, 0, H_TOP]);
 
 /** Upper half — anchored at the girdle-top on the facet's centreline
- *  (φ=π/16). This places the facet's lower edge on the girdle band. */
+ *  (φ=π/16, halfway between a star and a bezel). This places the facet's
+ *  lower edge on the girdle band. */
 const UPPER_HALF_PLANE: FacetPlane = planeFromAngles(PHI_UPPER_HALF, UPPER_HALF_ANGLE, +1,
   [R_GIRDLE * Math.cos(PHI_UPPER_HALF), R_GIRDLE * Math.sin(PHI_UPPER_HALF), H_GIRDLE_HALF]);
 
@@ -176,10 +198,13 @@ const UPPER_HALF_PLANE: FacetPlane = planeFromAngles(PHI_UPPER_HALF, UPPER_HALF_
 const LOWER_HALF_PLANE: FacetPlane = planeFromAngles(PHI_LOWER_HALF, LOWER_HALF_ANGLE, -1,
   [R_GIRDLE * Math.cos(PHI_LOWER_HALF), R_GIRDLE * Math.sin(PHI_LOWER_HALF), -H_GIRDLE_HALF]);
 
-/** Pavilion main — passes through the girdle-bottom at its centreline,
- *  converging toward the culet apex at (0, 0, H_BOT). */
+/** Pavilion main — shares the bezel's azimuth (φ = π/8, table vertex
+ *  direction) as is standard for a round brilliant. The plane passes
+ *  through the girdle-bottom POINT and converges toward the culet at
+ *  (0, 0, H_BOT); by H_PAVILION = R_GIRDLE · tan(PAVILION_ANGLE) the plane
+ *  exactly hits the culet too. */
 const PAVILION_PLANE: FacetPlane = planeFromAngles(PHI_PAVILION, PAVILION_ANGLE,   -1,
-  [R_GIRDLE, 0, -H_GIRDLE_HALF]);
+  [R_GIRDLE * Math.cos(PHI_PAVILION), R_GIRDLE * Math.sin(PHI_PAVILION), -H_GIRDLE_HALF]);
 
 // ---------- rotation uniform ----------
 
