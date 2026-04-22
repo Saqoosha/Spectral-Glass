@@ -91,11 +91,6 @@ fn coverUv(uv: vec2<f32>) -> vec2<f32> {
   return (uv - vec2<f32>(0.5)) * s + vec2<f32>(0.5);
 }
 
-// World-space is top-origin pixels (matches DOM pointer coords and defaultPills).
-fn screenUvFromWorld(px: vec2<f32>) -> vec2<f32> {
-  return vec2<f32>(px.x / frame.resolution.x, px.y / frame.resolution.y);
-}
-
 // ---------- SDF ----------
 
 fn sdfPill(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> f32 {
@@ -1026,8 +1021,16 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   // matching the UV-OOB symptom we already guard against on the
   // refraction sample below). Bg is the same colour the miss-path
   // neighbours render, so silhouette TIR pixels blend cleanly.
+  // Refraction / reflection UV base: the pixel's own screen UV. Adding
+  // the DEVIATION `(out_ray - rd).xy` (rather than `out_ray.xy`) makes
+  // non-refracting configurations collapse to the miss-path sample —
+  // critical for perspective, where `rd.xy != 0` away from the optical
+  // axis so `out_ray.xy * strength` gave a spurious offset even for a
+  // plate facing straight at the camera (visible as a slightly shrunk
+  // bg inside the glass). `(refl - rd).xy` / `(r2 - rd).xy` isolate the
+  // optical bend itself; refraction strength now scales only the bend.
   let refl       = reflect(rd, nFront);
-  let reflUv     = screenUvFromWorld(h.p.xy) + refl.xy * 0.2;
+  let reflUv     = uv + (refl - rd).xy * 0.2;
   let reflCover  = coverUv(reflUv);
   let reflInBnds = all(reflCover >= vec2<f32>(0.0)) && all(reflCover <= vec2<f32>(1.0));
   let reflRaw    = textureSampleLevel(photoTex, photoSmp, reflCover, 0.0).rgb;
@@ -1141,7 +1144,7 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     // bright reflection sample or a wrong-photo-region speckle. For real
     // TIR (#1) we still use the external reflection because it's the
     // physically-correct response, even if it can be visually noisy.
-    let uvOff       = screenUvFromWorld(pExit.xy) + r2.xy * strength;
+    let uvOff       = uv + (r2 - rd).xy * strength;
     let uvCover     = coverUv(uvOff);
     let uvInBounds  = all(uvCover >= vec2<f32>(0.0)) && all(uvCover <= vec2<f32>(1.0));
     let r2dot       = dot(r2, r2);
