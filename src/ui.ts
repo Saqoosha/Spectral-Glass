@@ -227,10 +227,10 @@ const PRESETS: readonly Preset[] = [
       p.n_d   = 1.5168;
       p.V_d   = 40;
       p.refractionStrength = 0.1;
-      p.shapes.pill = {
-        ...p.shapes.pill,
-        pillLen: 320, pillShort: 88, pillThick: 40, edgeR: 14,
-      };
+      // Mutate in place — Tweakpane bindings hold references from initUi; replacing
+      // the object would leave sliders writing stale copies that the render loop
+      // never reads.
+      Object.assign(p.shapes.pill, { pillLen: 320, pillShort: 88, pillThick: 40, edgeR: 14 });
       p.refractionMode = 'exact';
     },
   },
@@ -242,10 +242,7 @@ const PRESETS: readonly Preset[] = [
       p.n_d   = 1.6;
       p.V_d   = 18;
       p.refractionStrength = 0.35;
-      p.shapes.pill = {
-        ...p.shapes.pill,
-        pillLen: 320, pillShort: 88, pillThick: 40, edgeR: 14,
-      };
+      Object.assign(p.shapes.pill, { pillLen: 320, pillShort: 88, pillThick: 40, edgeR: 14 });
       p.refractionMode = 'exact';
     },
   },
@@ -257,10 +254,7 @@ const PRESETS: readonly Preset[] = [
       p.n_d   = 1.6;
       p.V_d   = 12;
       p.refractionStrength = 0.18;
-      p.shapes.prism = {
-        ...p.shapes.prism,
-        pillLen: 400, pillShort: 80, pillThick: 80, edgeR: 4,
-      };
+      Object.assign(p.shapes.prism, { pillLen: 400, pillShort: 80, pillThick: 80, edgeR: 4 });
       p.refractionMode = 'exact';
     },
   },
@@ -272,10 +266,7 @@ const PRESETS: readonly Preset[] = [
       p.n_d   = 1.55;
       p.V_d   = 18;
       p.refractionStrength = 0.2;
-      p.shapes.cube = {
-        ...p.shapes.cube,
-        pillLen: 160, pillShort: 160, pillThick: 160, edgeR: 10,
-      };
+      Object.assign(p.shapes.cube, { pillLen: 160, pillShort: 160, pillThick: 160, edgeR: 10 });
       p.refractionMode = 'exact';
     },
   },
@@ -287,11 +278,10 @@ const PRESETS: readonly Preset[] = [
       p.n_d   = 1.272;
       p.V_d   = 2.0;
       p.refractionStrength = 0.2;
-      p.shapes.plate = {
-        ...p.shapes.plate,
+      Object.assign(p.shapes.plate, {
         pillLen: 400, pillThick: 100, edgeR: 4, pillShort: 400,
         waveAmp: 20, waveWavelength: 300,
-      };
+      });
       p.refractionMode = 'exact';
     },
   },
