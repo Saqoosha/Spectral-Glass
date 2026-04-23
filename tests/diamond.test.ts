@@ -124,7 +124,11 @@ describe('diamondViewRotationColumns (fixed view presets)', () => {
     expect(z[2]).toBeCloseTo(1, 6);  // local +Z stays on world +Z
   });
 
-  it('side preset maps local +Z to world +Y (girdle axis vertical, profile visible)', () => {
+  it('side preset maps local +Z to world +Y (symmetry axis vertical on screen; profile/girdle edge-on)', () => {
+    // Convention-sync pin with the DiamondView docstring: "side" rotates the
+    // diamond's symmetry axis (local +Z, pointing from culet to table)
+    // onto world +Y (vertical on screen), so the girdle band is seen
+    // edge-on as a horizontal line across the middle.
     const m = rowMajor(diamondViewRotationColumns('side'));
     const z = mulMatVec(m, [0, 0, 1]);
     expect(z[0]).toBeCloseTo(0, 6);
@@ -140,17 +144,49 @@ describe('diamondViewRotationColumns (fixed view presets)', () => {
     expect(z[2]).toBeCloseTo(-1, 6);
   });
 
-  it('preserves vector length for every preset (orthonormal rotations)', () => {
-    // Pins the matrices as orthonormal — a transcription bug that breaks
-    // unit-length preservation would silently scale the rendered diamond
-    // by the (1 ± ε) factor the bad matrix introduces. Catching it here
-    // also guards against future view additions dropping in a non-rotation.
+  it('preserves vector length AND handedness (proper rotations, not reflections)', () => {
+    // Pins each preset as a rotation with determinant +1 — not just
+    // orthonormal (which would also admit reflections and determinant
+    // flips). A transcription bug that silently flipped handedness would
+    // render the diamond mirror-imaged. Explicit check per preset:
+    //   1. length preservation (orthonormality)
+    //   2. determinant = +1 (rotation, not reflection)
     for (const view of ['top', 'side', 'bottom'] as const) {
       const m = rowMajor(diamondViewRotationColumns(view));
       const v: [number, number, number] = [3, 4, 12];
       const r = mulMatVec(m, v);
       expect(Math.hypot(...r)).toBeCloseTo(Math.hypot(...v), 5);
+      // 3x3 determinant via cofactor expansion along row 0.
+      const r0 = m[0]!, r1 = m[1]!, r2 = m[2]!;
+      const det = r0[0]! * (r1[1]! * r2[2]! - r1[2]! * r2[1]!)
+                - r0[1]! * (r1[0]! * r2[2]! - r1[2]! * r2[0]!)
+                + r0[2]! * (r1[0]! * r2[1]! - r1[1]! * r2[0]!);
+      expect(det).toBeCloseTo(1, 5);
     }
+  });
+
+  it('leaves the per-column stride pad at zero for every preset', () => {
+    // Matches the same invariant tested on diamondRotationColumns above.
+    // Catches a refactor that switches the writer from Float32Array(12) +
+    // explicit index writes to something that stops zeroing slots 3 / 7 / 11
+    // (the per-column pad the WGSL mat3x3<f32> layout requires).
+    for (const view of ['top', 'side', 'bottom'] as const) {
+      const m = diamondViewRotationColumns(view);
+      expect(m[3]).toBe(0);
+      expect(m[7]).toBe(0);
+      expect(m[11]).toBe(0);
+    }
+  });
+
+  it('throws on unknown view (fail-fast defense vs silent-identity fallthrough)', () => {
+    // The parameter type Exclude<DiamondView, 'free'> rejects 'free' at
+    // compile time, but a caller that bypasses the type narrowing (e.g.
+    // new preset added to the union without a branch, cast from a string
+    // coming through persistence) would otherwise get a silent identity
+    // matrix — wrong for anything except `top`. The runtime throw makes
+    // the bug visible instead of showing a quietly-misposed diamond.
+    const bogus = 'macro' as unknown as 'top';
+    expect(() => diamondViewRotationColumns(bogus)).toThrow(/unknown view/);
   });
 });
 

@@ -219,9 +219,13 @@ const STAR_PLANE:    FacetPlane = planeFromAngles(PHI_STAR,    STAR_ANGLE,      
  *  perpendicular to the facet's centreline (cos(π/8 − π/16) = cos(π/16)
  *  identity collapses both anchor candidates to the same offset). So this
  *  single anchor pins BOTH girdle-rim corners the facet's bottom edge has
- *  to touch — anchoring at φ=π/16 (the earlier convention) would place the
- *  plane on the circumscribing-octagon rim, outside the girdle circle, and
- *  leave visible gaps where adjacent UHs fail to meet at the shared corners. */
+ *  to touch — anchoring at φ=π/16 on a circle of radius R_GIRDLE (the
+ *  earlier convention) would place the plane off the actual girdle chord,
+ *  outside the rim at both φ=0 and φ=π/8, and leave visible gaps where
+ *  adjacent UHs fail to meet at the shared corners. (Not to be confused
+ *  with the proxy mesh's "circumscribing octagon" at R_GIRDLE/cos(π/8) —
+ *  that's a different octagon, used only for the coverage-safe proxy
+ *  silhouette.) */
 const UPPER_HALF_PLANE: FacetPlane = planeFromAngles(PHI_UPPER_HALF, UPPER_HALF_ANGLE, +1,
   [R_GIRDLE, 0, H_GIRDLE_HALF]);
 
@@ -251,34 +255,30 @@ const DIAMOND_TILT = -20 * DEG;
  *  consistency without being dizzying. */
 const DIAMOND_SPIN_RATE = 0.30;
 
-/**
- * Diamond rotation matrix columns in WGSL-padded layout (12 floats, same
- * format as cubeRotationColumns / plateRotationColumns).
- *
- * Composition: Rx(DIAMOND_TILT) · Ry(time · DIAMOND_SPIN_RATE). The spin is
- * applied first (local Y-axis) so the tilt stays fixed — spinning a tilted
- * diamond, not tilting a spinning one. Mirrors the "rx · ry" order plate uses.
- */
 /** Preset view angles for the "click / hotkey to rotate to a canonical
  *  pose" flow. `free` is the default (tumble via `diamondRotationColumns`);
  *  the fixed poses pin the diamond so facet geometry can be cross-checked
  *  against a reference illustration without waiting for the right frame of
  *  the tumble animation.
  *
- *  Convention (world +Z toward camera, +Y up):
- *    - `top`    — table directly toward camera (identity rotation).
- *    - `side`   — girdle axis horizontal, table up the screen
- *                 (local +Z → world +Y via R_x(-π/2)).
- *    - `bottom` — culet toward camera (R_x(π) flip).
- */
+ *  Convention (world +Z toward camera, +Y up on screen):
+ *    - `top`    — diamond's table toward the camera (identity rotation);
+ *                 symmetry axis aligned with world +Z.
+ *    - `side`   — diamond's symmetry axis rotated onto world +Y (vertical
+ *                 on screen), so the girdle band is seen edge-on as a
+ *                 horizontal line across the middle (profile view).
+ *                 Implementation: R_x(-π/2).
+ *    - `bottom` — culet toward the camera (R_x(π) flip). */
 export type DiamondView = 'free' | 'top' | 'side' | 'bottom';
 
 /**
  * Fixed-view rotation matrix columns in the same WGSL-padded 12-float layout
  * as `diamondRotationColumns`. Callers pair this with a `view !== 'free'`
  * guard and pass the same result as both the current AND previous-frame
- * rotation — a fixed pose produces zero motion vector for the TAA reprojection
- * path, which is what we want when the shape is frozen.
+ * rotation — a fixed pose zeroes the ROTATION contribution to the TAA
+ * reprojection motion vector, which is what we want when the shape itself
+ * is frozen. Pill translation + camera motion still contribute their own
+ * motion-vector components through other paths.
  */
 export function diamondViewRotationColumns(view: Exclude<DiamondView, 'free'>): Float32Array {
   const out = new Float32Array(12);
@@ -287,7 +287,11 @@ export function diamondViewRotationColumns(view: Exclude<DiamondView, 'free'>): 
   let m00 = 1, m01 = 0, m02 = 0;
   let m10 = 0, m11 = 1, m12 = 0;
   let m20 = 0, m21 = 0, m22 = 1;
-  if (view === 'side') {
+  if (view === 'top') {
+    // Identity — baseline values above already encode R_I. Kept as an
+    // explicit branch so the exhaustive enumeration is visible here;
+    // adding a new preset means editing ONE place.
+  } else if (view === 'side') {
     // R_x(-π/2): local +Z → world +Y (table up), local +Y → world -Z (into screen).
     m10 = 0; m11 = 0; m12 = 1;
     m20 = 0; m21 = -1; m22 = 0;
@@ -295,6 +299,16 @@ export function diamondViewRotationColumns(view: Exclude<DiamondView, 'free'>): 
     // R_x(π): local +Z → world -Z (culet toward camera), local +Y → world -Y.
     m11 = -1;
     m22 = -1;
+  } else {
+    // Unreachable given the `Exclude<DiamondView, 'free'>` parameter type,
+    // but WGSL-fallthrough would silently return an identity matrix — wrong
+    // for any pose except `'top'`. Fail fast so a future caller that bypasses
+    // the type narrowing (e.g. a new preset added to the union without a
+    // branch here) sees a clear error instead of a visual regression.
+    // Same spirit as the `!Number.isFinite(time)` guard in
+    // diamondRotationColumns below.
+    const exhaustive: never = view;
+    throw new Error(`diamondViewRotationColumns: unknown view ${String(exhaustive)}`);
   }
   // Column 0 — image of the X basis
   out[0]  = m00; out[1]  = m10; out[2]  = m20;
@@ -305,6 +319,14 @@ export function diamondViewRotationColumns(view: Exclude<DiamondView, 'free'>): 
   return out;
 }
 
+/**
+ * Diamond rotation matrix columns in WGSL-padded layout (12 floats, same
+ * format as cubeRotationColumns / plateRotationColumns).
+ *
+ * Composition: Rx(DIAMOND_TILT) · Ry(time · DIAMOND_SPIN_RATE). The spin is
+ * applied first (local Y-axis) so the tilt stays fixed — spinning a tilted
+ * diamond, not tilting a spinning one. Mirrors the "rx · ry" order plate uses.
+ */
 export function diamondRotationColumns(time: number): Float32Array {
   // Same NaN/±Infinity guard as cube/plate: a poisoned rotation matrix slips
   // into the GPU uniform and gets silently "healed" by sceneNormal's
