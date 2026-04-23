@@ -57,6 +57,7 @@ function defaultParamsForSave(): Params {
     diamondSize: 200,
     diamondWireframe: false,
     diamondFacetColor: false,
+    diamondTirDebug: false,
     diamondView: 'free',
   };
 }

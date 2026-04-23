@@ -193,13 +193,13 @@ fn sdfDiamondFacetColor(pIn: vec3<f32>, diameter: f32) -> vec3<f32> {
 // Pill picker for TAA reprojection
 // -----------------------------------------------------------------------------
 //
-// Diamond doesn't use the analytical back-exit path (Phase A reuses the
-// generic insideTrace), but the reprojection path still needs to know WHICH
-// diamond instance we hit so the rotation reprojection pivots around the
-// correct pill center. Without this, multi-instance scenes would reproject
-// every diamond around pill[0]'s center, leaving diamonds at any other
-// position with wrong motion vectors and visible ghost trails proportional
-// to their on-screen distance from pill[0].
+// Needed by the TAA reprojection path so the rotation reprojection pivots
+// around the correct pill center — without this, multi-instance scenes
+// would reproject every diamond around pill[0]'s center, leaving
+// diamonds at any other position with wrong motion vectors and visible
+// ghost trails proportional to their on-screen distance from pill[0].
+// Also used by Phase B's analytical exit dispatch (`backExit` in
+// dispersion.wgsl) to pass the right pill index into `diamondAnalyticExit`.
 fn hitDiamondPillIdx(p: vec3<f32>) -> u32 {
   let count = min(u32(frame.pillCount), MAX_PILLS);
   var best:  u32 = 0u;
@@ -348,4 +348,184 @@ fn diamondProxyVertex(vi: u32, d: f32) -> vec3<f32> {
   let angle = f32(idx) * kAngleStep + kAngleBias;
   let r     = DIAMOND_GIRDLE_R_CIRC * d;
   return vec3<f32>(r * cos(angle), r * sin(angle), -DIAMOND_H_GIRDLE_HALF * d);
+}
+
+// -----------------------------------------------------------------------------
+// Analytical back-exit — Phase B
+// -----------------------------------------------------------------------------
+//
+// Mirror of src/math/diamondExit.ts (see that file for the motivation).
+// Returns a CubeExit { pWorld, nBack } where `nBack` is the INWARD normal
+// (i.e. `-nOut`) matching cubeAnalyticExit / plateAnalyticExit so backExit()
+// can dispatch uniformly. Any drift between this function and the JS mirror
+// surfaces as a failed `tests/diamondAnalyticExit.test.ts` case — the JS
+// impl is the regression pin.
+//
+// Algorithm:
+//   1. Rotate ray into the diamond's local frame (around pill.center).
+//   2. Test all 57 unfolded facet planes (1 table + 8 bezel + 8 star +
+//      16 upper half + 16 lower half + 8 pavilion) and the girdle
+//      cylinder. Keep the MIN positive t. The exit normal is the winning
+//      facet's outward normal (exact — no finite-diff degeneracy at facet
+//      edges, which was the root cause of the "other facets suddenly
+//      appearing" artifact during tumble).
+//   3. Rotate the exit point back to world space; return with the normal
+//      negated (convention: `nBack = -nOut`).
+//
+// DIAMOND_BOUNCE_EPS is the facet-to-facet self-hit tolerance used here,
+// NOT the project-wide sphere-tracer `HIT_EPS = 0.25 px`. The sphere
+// tracer's threshold is too loose for bounce-chain exits — adjacent
+// diamond facets can be within 0.1 px of each other at the default size,
+// and a 0.25 px floor would silently discard legitimate nearby hits
+// (e.g. upper-half→girdle second bounces that complete in ~0.08 px), so
+// the min-t search would roll through to a wrong far facet. 0.01 px
+// clears the floating-point noise around the previous facet's plane
+// (where dot(n_prev, ro_bounce) ≈ offset_prev) while still admitting any
+// real next-facet hit. The JS mirror uses `DIAMOND_HIT_EPS = 1e-6` in
+// unit-diameter space (~2e-4 px at d=200), even tighter because f64 has
+// the headroom; see src/math/diamondExit.ts.
+const DIAMOND_BOUNCE_EPS: f32 = 0.01;
+fn diamondAnalyticExit(roWorld: vec3<f32>, rdWorld: vec3<f32>, pillIdx: u32) -> CubeExit {
+  let pill = frame.pills[pillIdx];
+  let d    = frame.diamondSize;
+
+  // World → local. Rotation is orthonormal, so rdL stays unit length if
+  // rdWorld was. No translation for rdL (direction is translation-invariant).
+  let roL = frame.diamondRot * (roWorld - pill.center);
+  let rdL = frame.diamondRot * rdWorld;
+
+  // Running min-t tracker. The initial normal is ZERO (not a unit vector)
+  // so that "nothing was hit" is distinguishable at the caller: after the
+  // facet/cylinder sweep, `dot(bestN, bestN) < 0.5` means the ray missed
+  // every surface and the exit is a sentinel, not a real intersection.
+  // This shouldn't fire for an interior ray but DOES fire in degenerate
+  // bounce-chain conditions (e.g. ro on a shared vertex with rd exiting
+  // through multiple coincident planes).
+  //
+  // How this sentinel propagates safely: the wavelength loop calls
+  // `refract(bouncedR1, exN.nBack, ior)` on the returned struct. For
+  // ior = n_d > 1 (glass → vacuum exit), `refract` with a zero N hits
+  // the `k = 1 - eta² * (1 - dot² = 0) = 1 - ior² < 0` branch and
+  // returns the zero vector. The downstream `trialDot < 1e-4` TIR gate
+  // then routes into the chain's exhaustion fallback (bg or hot pink).
+  // It does NOT propagate a bogus unit-normal as if a real facet had
+  // been hit. A future caller that consumes `nBack` WITHOUT going
+  // through refract (e.g. direct Fresnel evaluation) must add an
+  // explicit `dot(nBack, nBack) > 0.5` guard.
+  var bestT: f32            = 1.0e30;
+  var bestN: vec3<f32>      = vec3<f32>(0.0, 0.0, 0.0);
+
+  // ---- Table cap (+Z plane at z = H_TOP · d) ----
+  if (rdL.z > 0.0) {
+    let tTable = (DIAMOND_H_TOP * d - roL.z) / rdL.z;
+    if (tTable > DIAMOND_BOUNCE_EPS && tTable < bestT) {
+      bestT = tTable;
+      bestN = vec3<f32>(0.0, 0.0, 1.0);
+    }
+  }
+
+  // ---- Bezel (8) ----
+  let oBezel = DIAMOND_BEZEL_O * d;
+  for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+    let n = DIAMOND_BEZEL_N_ARR[i];
+    let denom = dot(n, rdL);
+    if (denom > 0.0) {
+      let t = (oBezel - dot(n, roL)) / denom;
+      if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+        bestT = t; bestN = n;
+      }
+    }
+  }
+
+  // ---- Star (8) ----
+  let oStar = DIAMOND_STAR_O * d;
+  for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+    let n = DIAMOND_STAR_N_ARR[i];
+    let denom = dot(n, rdL);
+    if (denom > 0.0) {
+      let t = (oStar - dot(n, roL)) / denom;
+      if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+        bestT = t; bestN = n;
+      }
+    }
+  }
+
+  // ---- Upper half (16) ----
+  let oUhalf = DIAMOND_UPPER_HALF_O * d;
+  for (var i: u32 = 0u; i < 16u; i = i + 1u) {
+    let n = DIAMOND_UPPER_HALF_N_ARR[i];
+    let denom = dot(n, rdL);
+    if (denom > 0.0) {
+      let t = (oUhalf - dot(n, roL)) / denom;
+      if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+        bestT = t; bestN = n;
+      }
+    }
+  }
+
+  // ---- Lower half (16) ----
+  let oLhalf = DIAMOND_LOWER_HALF_O * d;
+  for (var i: u32 = 0u; i < 16u; i = i + 1u) {
+    let n = DIAMOND_LOWER_HALF_N_ARR[i];
+    let denom = dot(n, rdL);
+    if (denom > 0.0) {
+      let t = (oLhalf - dot(n, roL)) / denom;
+      if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+        bestT = t; bestN = n;
+      }
+    }
+  }
+
+  // ---- Pavilion mains (8) ----
+  let oPav = DIAMOND_PAVILION_O * d;
+  for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+    let n = DIAMOND_PAVILION_N_ARR[i];
+    let denom = dot(n, rdL);
+    if (denom > 0.0) {
+      let t = (oPav - dot(n, roL)) / denom;
+      if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+        bestT = t; bestN = n;
+      }
+    }
+  }
+
+  // ---- Girdle cylinder ----
+  // Radius R_GIRDLE · d in the XY plane; z-band [-H_GIRDLE_HALF · d, +].
+  // Interior ray ⇒ c < 0 ⇒ the OUTGOING root is (-b + √disc)/(2a). The
+  // a > 1e-6 guard skips near-vertical rays (no cylinder contribution).
+  let a = rdL.x * rdL.x + rdL.y * rdL.y;
+  if (a > 1.0e-6) {
+    let b = 2.0 * (roL.x * rdL.x + roL.y * rdL.y);
+    let rG = DIAMOND_R_GIRDLE * d;
+    let c  = roL.x * roL.x + roL.y * roL.y - rG * rG;
+    let disc = b * b - 4.0 * a * c;
+    if (disc >= 0.0) {
+      let t = (-b + sqrt(disc)) / (2.0 * a);
+      if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+        let z  = roL.z + t * rdL.z;
+        let gh = DIAMOND_H_GIRDLE_HALF * d;
+        // Slack the band check by DIAMOND_BOUNCE_EPS on each side —
+        // floating-point near-misses at the exact girdle/facet
+        // transition should still register. Same spirit as the
+        // DIAMOND_BOUNCE_EPS guard on the plane tests above.
+        if (z >= -gh - DIAMOND_BOUNCE_EPS && z <= gh + DIAMOND_BOUNCE_EPS) {
+          let px = roL.x + t * rdL.x;
+          let py = roL.y + t * rdL.y;
+          let invLen = inverseSqrt(px * px + py * py);
+          bestT = t;
+          bestN = vec3<f32>(px * invLen, py * invLen, 0.0);
+        }
+      }
+    }
+  }
+
+  // Local exit point, then local → world (inverse rotation = transpose).
+  let pL     = roL + rdL * bestT;
+  let rotT   = transpose(frame.diamondRot);
+  let pWorld = rotT * pL + pill.center;
+  let nOut   = rotT * bestN;
+  // CubeExit's `nBack` convention is the INWARD normal (same sign as
+  // -sceneNormal). Caller uses it in refract() where the inside-facing
+  // form is what the Snell math expects.
+  return CubeExit(pWorld, -nOut);
 }

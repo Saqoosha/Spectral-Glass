@@ -244,6 +244,71 @@ const LOWER_HALF_PLANE: FacetPlane = planeFromAngles(PHI_LOWER_HALF, LOWER_HALF_
 const PAVILION_PLANE: FacetPlane = planeFromAngles(PHI_PAVILION, PAVILION_ANGLE,   -1,
   [R_GIRDLE, 0, -H_GIRDLE_HALF]);
 
+// ---------- unfolded plane arrays (Phase B analytical back-exit) ----------
+//
+// The SDF (Phase A) uses D_8 folding to reduce 5 plane CLASSES
+// (+ 1 table cap + 1 girdle cylinder = 7 SDF terms evaluated per pixel) —
+// fast, but only gives a distance, not "which specific facet did the ray
+// hit?". Phase B's analytical back-exit needs to walk the ray against
+// every unfolded plane to find the actual exit facet and return its
+// outward normal (no finite-diff degeneracy at edges). So we emit the
+// unfolded normals here, as WGSL `array<vec3<f32>, N>` consts injected
+// into the shader at pipeline build time. Total plane count: 1 table +
+// 8 bezels + 8 stars + 16 upper halves + 16 lower halves + 8 pavilions
+// = 57 planes (plus the girdle cylinder, which is not a plane).
+//
+// Offsets are rotation-invariant (rotation around Z preserves plane→origin
+// distance — the offset term in `dot(n, anchor) = offset` is computed in the
+// ROTATED frame so the anchor rotates with the normal). One scalar per class
+// suffices; reuse the fundamental-wedge plane's offset (BEZEL_PLANE.offset,
+// STAR_PLANE.offset, …) via the existing DIAMOND_*_O consts.
+//
+// Azimuth enumeration (matches the 96-index brilliant-cut wheel):
+//   - BEZEL / PAVILION:   φ_k = k·π/4      for k=0..7   (8 each, at table vertices)
+//   - STAR:               φ_k = π/8 + k·π/4 for k=0..7  (8, at table edge midpoints)
+//   - UPPER / LOWER HALF: φ_k = π/16 + k·π/8 for k=0..15 (16 each, two per sector
+//     straddling the bezel/pavilion axis — the ±π/16 pattern collapses to a
+//     uniform π/8 spacing around the full circle)
+
+/** Compact 3-vector tuple for plane normals, matching FacetPlane's nx/ny/nz. */
+type Normal3 = readonly [number, number, number];
+
+/** Rotate a normal around the +Z axis by `theta` radians. nz stays untouched
+ *  — all facet classes are azimuthally symmetric around the diamond's
+ *  vertical axis, so rotation never changes the tilt. */
+function rotateNormalZ(n: Normal3, theta: number): Normal3 {
+  const c = Math.cos(theta);
+  const s = Math.sin(theta);
+  return [c * n[0] - s * n[1], s * n[0] + c * n[1], n[2]];
+}
+
+/** Build the unfolded normal array for a facet class: `count` copies of
+ *  `base`, each rotated by `k·stepRad` around Z. The base normal already
+ *  carries its own fundamental-wedge azimuth (e.g. π/16 for UH), so the
+ *  result is at [base_phi, base_phi + stepRad, base_phi + 2·stepRad, …]. */
+function unfoldNormals(base: FacetPlane, count: number, stepRad: number): readonly Normal3[] {
+  const baseN: Normal3 = [base.nx, base.ny, base.nz];
+  const out: Normal3[] = [];
+  for (let k = 0; k < count; k++) {
+    out.push(rotateNormalZ(baseN, k * stepRad));
+  }
+  return out;
+}
+
+/** 8 bezel normals at φ = k·π/4, k=0..7 (aligned with table vertices). */
+export const DIAMOND_BEZEL_N_ARR:      readonly Normal3[] = unfoldNormals(BEZEL_PLANE,      8,  Math.PI / 4);
+/** 8 star normals at φ = π/8 + k·π/4, k=0..7 (aligned with table edges). */
+export const DIAMOND_STAR_N_ARR:       readonly Normal3[] = unfoldNormals(STAR_PLANE,       8,  Math.PI / 4);
+/** 16 upper-half normals at φ = π/16 + k·π/8, k=0..15 (two per sector,
+ *  straddling each bezel-pavilion axis). */
+export const DIAMOND_UPPER_HALF_N_ARR: readonly Normal3[] = unfoldNormals(UPPER_HALF_PLANE, 16, Math.PI / 8);
+/** 16 lower-half normals at φ = π/16 + k·π/8, k=0..15 (mirror of UH on the
+ *  pavilion side). */
+export const DIAMOND_LOWER_HALF_N_ARR: readonly Normal3[] = unfoldNormals(LOWER_HALF_PLANE, 16, Math.PI / 8);
+/** 8 pavilion-main normals at φ = k·π/4, k=0..7 (sharing the bezel's
+ *  azimuth on the pavilion side). */
+export const DIAMOND_PAVILION_N_ARR:   readonly Normal3[] = unfoldNormals(PAVILION_PLANE,   8,  Math.PI / 4);
+
 // ---------- rotation uniform ----------
 
 /** Forward tilt of the diamond (radians). 20° leaves the table's silhouette
@@ -381,6 +446,18 @@ function emitPlaneConst(prefix: string, p: FacetPlane): string {
        + `const ${prefix}_O: f32       = ${fwgsl(p.offset)};\n`;
 }
 
+/** Emit the unfolded-normals array const for Phase B's analytical back-exit.
+ *  The paired offset stays as the existing `${prefix}_O` scalar (rotation-
+ *  invariant), so the WGSL reader indexes into the array for the normal and
+ *  uses the shared offset for the plane equation. */
+function emitNormalArrayConst(prefix: string, normals: readonly Normal3[]): string {
+  const count = normals.length;
+  const body = normals
+    .map(n => `  vec3<f32>(${fwgsl(n[0])}, ${fwgsl(n[1])}, ${fwgsl(n[2])})`)
+    .join(',\n');
+  return `const ${prefix}_N_ARR: array<vec3<f32>, ${count}> = array<vec3<f32>, ${count}>(\n${body}\n);\n`;
+}
+
 /**
  * Proxy mesh triangle/vertex count — the single source of truth that both
  * the host draw call (src/webgpu/pipeline.ts) and the WGSL proxy vertex
@@ -457,6 +534,14 @@ export function diamondWgslConstants(): string {
     emitPlaneConst('DIAMOND_UPPER_HALF', UPPER_HALF_PLANE),
     emitPlaneConst('DIAMOND_LOWER_HALF', LOWER_HALF_PLANE),
     emitPlaneConst('DIAMOND_PAVILION',   PAVILION_PLANE),
+    // Phase B: unfolded plane normal arrays for the analytical back-exit.
+    // Each class's offset scalar (`_O` above) is rotation-invariant and
+    // shared across all rotated copies.
+    emitNormalArrayConst('DIAMOND_BEZEL',      DIAMOND_BEZEL_N_ARR),
+    emitNormalArrayConst('DIAMOND_STAR',       DIAMOND_STAR_N_ARR),
+    emitNormalArrayConst('DIAMOND_UPPER_HALF', DIAMOND_UPPER_HALF_N_ARR),
+    emitNormalArrayConst('DIAMOND_LOWER_HALF', DIAMOND_LOWER_HALF_N_ARR),
+    emitNormalArrayConst('DIAMOND_PAVILION',   DIAMOND_PAVILION_N_ARR),
     '// ---- end generated ----',
     '',
   ].join('\n');

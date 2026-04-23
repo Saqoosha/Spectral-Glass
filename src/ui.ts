@@ -108,6 +108,14 @@ export type Params = {
   // so per-facet adjacency + coverage are visible without refraction
   // muddying the signal. Typically paired with refractionStrength=0.
   diamondFacetColor: boolean;
+  // Diamond-only TIR-chain debug. When true, the wavelength-loop's
+  // bounce-chain-exhausted fallback paints HOT PINK instead of blending
+  // into the silhouette (`bg`). Reveals which pixels needed more than
+  // 2 internal bounces to escape. Expected pattern: top view saturated
+  // (Tolkowsky cut traps axial light), bottom view mostly clean (one
+  // bounce suffices), side + tumble scattered. Leave off for production
+  // rendering.
+  diamondTirDebug: boolean;
   // Diamond-only rotation preset. 'free' tumbles with the spin animation;
   // fixed views pin to a canonical pose for cross-checking facet geometry
   // against a reference (top = table toward camera, side = girdle profile,
@@ -317,6 +325,13 @@ export function initUi(
   const diamondFacetColorBinding = shape.addBinding(params, 'diamondFacetColor', {
     label: 'Facet color',
   });
+  // Diamond-only: TIR-chain diagnostic. ON paints hot pink where the
+  // 2-bounce chain runs out of refract candidates. Useful for eyeballing
+  // "does a 3rd bounce buy much coverage?" before committing to the extra
+  // cost. Leave OFF for the production rendering path.
+  const diamondTirDebugBinding = shape.addBinding(params, 'diamondTirDebug', {
+    label: 'TIR debug',
+  });
   // Diamond-only: canonical view presets. 'Free' keeps the tumble; the
   // three fixed poses pin the shape so facet geometry can be compared
   // against a reference illustration. T/S/B/F hotkeys bind to the same
@@ -356,6 +371,7 @@ export function initUi(
     diamondSizeBinding.hidden       = !isDiamond;
     diamondWireframeBinding.hidden  = !isDiamond;
     diamondFacetColorBinding.hidden = !isDiamond;
+    diamondTirDebugBinding.hidden   = !isDiamond;
     diamondViewBinding.hidden       = !isDiamond;
     if (isCube) {
       // Average the three dims to seed Size — covers the case where shape
@@ -515,6 +531,7 @@ export function defaultParams(): Params {
     diamondSize: 200,
     diamondWireframe: false,
     diamondFacetColor: false,
+    diamondTirDebug: false,
     diamondView: 'free',
   };
 }

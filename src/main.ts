@@ -375,6 +375,7 @@ async function main(): Promise<void> {
         diamondSize:        params.diamondSize,
         diamondWireframe:   params.diamondWireframe,
         diamondFacetColor:  params.diamondFacetColor,
+        diamondTirDebug:    params.diamondTirDebug,
         diamondView:        params.diamondView,
         pills,
       });

@@ -3,12 +3,17 @@ import {
   diamondRotationColumns,
   diamondViewRotationColumns,
   diamondWgslConstants,
+  DIAMOND_BEZEL_N_ARR,
   DIAMOND_HEIGHT_RATIO,
   DIAMOND_INTERNALS,
+  DIAMOND_LOWER_HALF_N_ARR,
+  DIAMOND_PAVILION_N_ARR,
   DIAMOND_PROXY_TRI_COUNT,
   DIAMOND_PROXY_VERT_COUNT,
   DIAMOND_SIZE_MIN,
   DIAMOND_SIZE_MAX,
+  DIAMOND_STAR_N_ARR,
+  DIAMOND_UPPER_HALF_N_ARR,
 } from '../src/math/diamond';
 
 // Reconstruct a row-major 3x3 from the WGSL mat3x3<f32> layout that
@@ -457,5 +462,235 @@ describe('diamondWgslConstants', () => {
     const wgsl = diamondWgslConstants();
     expect(wgsl).toContain(`${DIAMOND_PROXY_VERT_COUNT}u;`);
     expect(DIAMOND_PROXY_VERT_COUNT).toBe(DIAMOND_PROXY_TRI_COUNT * 3);
+  });
+
+  it('emits unfolded plane normal arrays sized for the full polytope (Phase B)', () => {
+    // Phase B's analytical back-exit walks the ray against every unfolded
+    // facet plane (can't use the D_8 fold — the ray crosses wedge
+    // boundaries). The WGSL `array<vec3<f32>, N>` count pins the polytope's
+    // facet inventory: 8 bezels, 8 stars, 16 upper halves, 16 lower halves,
+    // 8 pavilion mains. A mis-count here means the ray misses facets or
+    // reads out-of-bounds memory on the GPU.
+    const wgsl = diamondWgslConstants();
+    expect(wgsl).toContain('const DIAMOND_BEZEL_N_ARR: array<vec3<f32>, 8>');
+    expect(wgsl).toContain('const DIAMOND_STAR_N_ARR: array<vec3<f32>, 8>');
+    expect(wgsl).toContain('const DIAMOND_UPPER_HALF_N_ARR: array<vec3<f32>, 16>');
+    expect(wgsl).toContain('const DIAMOND_LOWER_HALF_N_ARR: array<vec3<f32>, 16>');
+    expect(wgsl).toContain('const DIAMOND_PAVILION_N_ARR: array<vec3<f32>, 8>');
+  });
+});
+
+describe('diamond unfolded plane arrays (Phase B analytical back-exit)', () => {
+  it('have the expected facet counts (8/8/16/16/8)', () => {
+    // 56 facet planes summed across the arrays: 8 bezels + 8 stars + 16
+    // upper halves + 16 lower halves + 8 pavilions. The table cap (+1
+    // plane) and girdle cylinder (not a plane) are handled outside these
+    // arrays — the analytic-exit shader adds them by hand, see
+    // `diamondAnalyticExit` in src/shaders/diamond.wgsl.
+    expect(DIAMOND_BEZEL_N_ARR.length).toBe(8);
+    expect(DIAMOND_STAR_N_ARR.length).toBe(8);
+    expect(DIAMOND_UPPER_HALF_N_ARR.length).toBe(16);
+    expect(DIAMOND_LOWER_HALF_N_ARR.length).toBe(16);
+    expect(DIAMOND_PAVILION_N_ARR.length).toBe(8);
+  });
+
+  it('first entry of every array matches the fundamental-wedge plane normal', () => {
+    // The unfolder starts at k=0 (no rotation), so the head of each array
+    // is literally the fundamental-wedge plane stored in DIAMOND_INTERNALS.
+    // If this drifts, the SDF path (which uses DIAMOND_*_N) and the
+    // analytical exit path (which uses DIAMOND_*_N_ARR) would disagree on
+    // what "bezel 0" even is.
+    const near = (a: readonly number[], b: { nx: number; ny: number; nz: number }): void => {
+      expect(a[0]).toBeCloseTo(b.nx, 10);
+      expect(a[1]).toBeCloseTo(b.ny, 10);
+      expect(a[2]).toBeCloseTo(b.nz, 10);
+    };
+    const p = DIAMOND_INTERNALS.planes;
+    near(DIAMOND_BEZEL_N_ARR[0]!,      p.bezel);
+    near(DIAMOND_STAR_N_ARR[0]!,       p.star);
+    near(DIAMOND_UPPER_HALF_N_ARR[0]!, p.upperHalf);
+    near(DIAMOND_LOWER_HALF_N_ARR[0]!, p.lowerHalf);
+    near(DIAMOND_PAVILION_N_ARR[0]!,   p.pavilion);
+  });
+
+  it('every normal is unit length (orthonormal rotation around +Z preserves magnitude)', () => {
+    for (const arr of [
+      DIAMOND_BEZEL_N_ARR,
+      DIAMOND_STAR_N_ARR,
+      DIAMOND_UPPER_HALF_N_ARR,
+      DIAMOND_LOWER_HALF_N_ARR,
+      DIAMOND_PAVILION_N_ARR,
+    ]) {
+      for (const n of arr) {
+        expect(Math.hypot(...n)).toBeCloseTo(1, 8);
+      }
+    }
+  });
+
+  it('bezel + pavilion + star normals all share the same tilt (|nz| within the class)', () => {
+    // nz = ±cos(alpha_class). Rotating around Z never touches nz, so every
+    // normal in a given class has an identical z-component. Catches a
+    // regression where someone writes a 3x3 rotation matrix instead of a
+    // 2x2 in-plane rotation and accidentally mixes tilts.
+    for (const arr of [
+      DIAMOND_BEZEL_N_ARR,
+      DIAMOND_STAR_N_ARR,
+      DIAMOND_UPPER_HALF_N_ARR,
+      DIAMOND_LOWER_HALF_N_ARR,
+      DIAMOND_PAVILION_N_ARR,
+    ]) {
+      const nz0 = arr[0]![2];
+      for (const n of arr) {
+        expect(n[2]).toBeCloseTo(nz0, 10);
+      }
+    }
+  });
+
+  it('consecutive bezel normals differ by a π/4 rotation around +Z', () => {
+    // 8 bezels, spaced π/4 apart. Applying the inverse rotation R_z(-π/4)
+    // to entry k+1 should recover entry k. Pins the unfolder's step size —
+    // a wrong step would space facets at the wrong azimuths and the SDF /
+    // analytical exit results would disagree at specific rays.
+    const step = Math.PI / 4;
+    const c = Math.cos(step), s = Math.sin(step);
+    for (let k = 0; k < 7; k++) {
+      const a = DIAMOND_BEZEL_N_ARR[k]!;
+      const b = DIAMOND_BEZEL_N_ARR[k + 1]!;
+      // Rotate `a` forward and compare with `b`.
+      const expBx = c * a[0] - s * a[1];
+      const expBy = s * a[0] + c * a[1];
+      expect(b[0]).toBeCloseTo(expBx, 10);
+      expect(b[1]).toBeCloseTo(expBy, 10);
+      expect(b[2]).toBeCloseTo(a[2],  10);
+    }
+  });
+
+  it('consecutive upper-half normals differ by a π/8 rotation around +Z', () => {
+    // 16 UH, spaced π/8 apart (two per sector — one on each side of the
+    // bezel/pavilion axis, together covering the full circle).
+    const step = Math.PI / 8;
+    const c = Math.cos(step), s = Math.sin(step);
+    for (let k = 0; k < 15; k++) {
+      const a = DIAMOND_UPPER_HALF_N_ARR[k]!;
+      const b = DIAMOND_UPPER_HALF_N_ARR[k + 1]!;
+      const expBx = c * a[0] - s * a[1];
+      const expBy = s * a[0] + c * a[1];
+      expect(b[0]).toBeCloseTo(expBx, 10);
+      expect(b[1]).toBeCloseTo(expBy, 10);
+    }
+  });
+
+  it('every upper-half plane passes through both of its shared girdle-top corners', () => {
+    // Load-bearing invariant: each UH plane sits on the girdle rim at
+    // φ_corner = k·π/8 and φ_corner = (k+1)·π/8 (the two girdle corners
+    // between adjacent bezels/pavilions that the facet shares with its
+    // neighbours). The shared `UPPER_HALF_O` scalar is the rotation-
+    // invariant offset — so dot(n_k, corner_{k}) AND dot(n_k,
+    // corner_{k+1}) should both equal that offset.
+    //
+    // If the unfolder drifts (wrong step, wrong start phase, mirroring bug),
+    // facets stop meeting at the shared girdle corners and the rendered
+    // crown shows gaps between neighbouring UH + bezel/star.
+    const UH_O = DIAMOND_INTERNALS.planes.upperHalf.offset;
+    const R    = DIAMOND_INTERNALS.R_GIRDLE;
+    const H    = DIAMOND_INTERNALS.H_GIRDLE_HALF;
+    for (let k = 0; k < DIAMOND_UPPER_HALF_N_ARR.length; k++) {
+      const n = DIAMOND_UPPER_HALF_N_ARR[k]!;
+      // UH_k sits between girdle corners at azimuth k·π/8 and (k+1)·π/8.
+      for (const cornerK of [k, k + 1]) {
+        const phi = cornerK * Math.PI / 8;
+        const cx = R * Math.cos(phi);
+        const cy = R * Math.sin(phi);
+        const cz = H;
+        const dot = cx * n[0] + cy * n[1] + cz * n[2];
+        expect(dot).toBeCloseTo(UH_O, 8);
+      }
+    }
+  });
+
+  it('every lower-half plane passes through both of its shared girdle-bottom corners', () => {
+    // Mirror of the upper-half invariant across z=0. Same reasoning: the
+    // LH plane's -cos(α) component pairs with the -H_GIRDLE_HALF corner
+    // depth to reproduce the shared offset. Drift here manifests as gaps
+    // between neighbouring LH + pavilion facets on the pavilion side.
+    const LH_O = DIAMOND_INTERNALS.planes.lowerHalf.offset;
+    const R    = DIAMOND_INTERNALS.R_GIRDLE;
+    const H    = DIAMOND_INTERNALS.H_GIRDLE_HALF;
+    for (let k = 0; k < DIAMOND_LOWER_HALF_N_ARR.length; k++) {
+      const n = DIAMOND_LOWER_HALF_N_ARR[k]!;
+      for (const cornerK of [k, k + 1]) {
+        const phi = cornerK * Math.PI / 8;
+        const cx = R * Math.cos(phi);
+        const cy = R * Math.sin(phi);
+        const cz = -H;
+        const dot = cx * n[0] + cy * n[1] + cz * n[2];
+        expect(dot).toBeCloseTo(LH_O, 8);
+      }
+    }
+  });
+
+  it('every bezel plane passes through its corresponding girdle-top corner', () => {
+    // Bezel_k has its centreline at φ = k·π/4 and passes through the
+    // girdle-top corner at the same azimuth. Catches azimuth drift that
+    // would misalign the bezel kite with the table vertex above it.
+    const B_O = DIAMOND_INTERNALS.planes.bezel.offset;
+    const R   = DIAMOND_INTERNALS.R_GIRDLE;
+    const H   = DIAMOND_INTERNALS.H_GIRDLE_HALF;
+    for (let k = 0; k < DIAMOND_BEZEL_N_ARR.length; k++) {
+      const n = DIAMOND_BEZEL_N_ARR[k]!;
+      const phi = k * Math.PI / 4;
+      const cx = R * Math.cos(phi);
+      const cy = R * Math.sin(phi);
+      const cz = H;
+      const dot = cx * n[0] + cy * n[1] + cz * n[2];
+      expect(dot).toBeCloseTo(B_O, 8);
+    }
+  });
+
+  it('every star plane passes through the table-edge midpoint at its azimuth', () => {
+    // Star_k has centreline at φ = π/8 + k·π/4 — directly above the
+    // midpoint of table edge k. The plane equation at that midpoint
+    // (R_TABLE_APOTHEM·cos φ, R_TABLE_APOTHEM·sin φ, H_TOP) should
+    // evaluate to the shared STAR_O offset. Catches an azimuth drift
+    // between the unfolded array and the fundamental-wedge phi
+    // (PHI_STAR = π/8) — e.g. a regression to φ = 0 would silently
+    // produce a geometrically wrong but still unit-length set of
+    // normals.
+    const S_O   = DIAMOND_INTERNALS.planes.star.offset;
+    const Rapo  = DIAMOND_INTERNALS.R_TABLE_APOTHEM;
+    const H_TOP = DIAMOND_INTERNALS.H_TOP;
+    for (let k = 0; k < DIAMOND_STAR_N_ARR.length; k++) {
+      const n   = DIAMOND_STAR_N_ARR[k]!;
+      const phi = Math.PI / 8 + k * Math.PI / 4;
+      const mx  = Rapo * Math.cos(phi);
+      const my  = Rapo * Math.sin(phi);
+      const mz  = H_TOP;
+      const dot = mx * n[0] + my * n[1] + mz * n[2];
+      expect(dot).toBeCloseTo(S_O, 8);
+    }
+  });
+
+  it('every pavilion plane passes through its corresponding girdle-bottom corner AND the culet', () => {
+    // Pavilion_k has centreline at φ = k·π/4 (same as bezel_k) and passes
+    // through (1) the girdle-bottom corner at that azimuth, and (2) the
+    // culet apex at (0, 0, H_BOT). By H_PAVILION = R_GIRDLE · tan(α_pav)
+    // the plane is defined so both constraints hold simultaneously — a
+    // regression in that derivation would fail the culet check.
+    const P_O   = DIAMOND_INTERNALS.planes.pavilion.offset;
+    const R     = DIAMOND_INTERNALS.R_GIRDLE;
+    const H     = DIAMOND_INTERNALS.H_GIRDLE_HALF;
+    const H_BOT = DIAMOND_INTERNALS.H_BOT;
+    for (let k = 0; k < DIAMOND_PAVILION_N_ARR.length; k++) {
+      const n = DIAMOND_PAVILION_N_ARR[k]!;
+      const phi = k * Math.PI / 4;
+      // Girdle-bottom corner at this azimuth.
+      const cg: readonly [number, number, number] = [R * Math.cos(phi), R * Math.sin(phi), -H];
+      const dotG = cg[0] * n[0] + cg[1] * n[1] + cg[2] * n[2];
+      expect(dotG).toBeCloseTo(P_O, 8);
+      // Culet apex (shared by ALL pavilion planes — that's what "mains
+      // converge at the culet" means).
+      const dotC = 0 * n[0] + 0 * n[1] + H_BOT * n[2];
+      expect(dotC).toBeCloseTo(P_O, 8);
+    }
   });
 });

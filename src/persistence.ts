@@ -95,6 +95,7 @@ function validateParams(u: unknown): Partial<Params> {
   if (isFiniteNumber(p.diamondSize))     out.diamondSize    = clamp(p.diamondSize, DIAMOND_SIZE_MIN, DIAMOND_SIZE_MAX);
   if (typeof p.diamondWireframe === 'boolean')  out.diamondWireframe  = p.diamondWireframe;
   if (typeof p.diamondFacetColor === 'boolean') out.diamondFacetColor = p.diamondFacetColor;
+  if (typeof p.diamondTirDebug === 'boolean')   out.diamondTirDebug   = p.diamondTirDebug;
   if (typeof p.diamondView === 'string' && DIAMOND_VIEWS.has(p.diamondView as DiamondView)) {
     out.diamondView = p.diamondView as DiamondView;
   }

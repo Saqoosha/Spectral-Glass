@@ -88,12 +88,15 @@ struct Frame {
   // `diamondWireframe` toggles the facet-edge overlay (1.0 = on).
   // `diamondFacetColor` toggles a flat-shaded debug fill where each facet
   // class gets a distinct colour — useful for checking adjacency + coverage
-  // without refraction / dispersion confusing the signal. The remaining
-  // slot is reserved for future diamond controls (e.g., angle overrides).
+  // without refraction / dispersion confusing the signal.
+  // `diamondTirDebug` (1.0 = on): paint the TIR-exhausted bounce fallback
+  // HOT PINK so "where does the analytical exit run out of refract
+  // candidates after two internal bounces?" is visible at a glance. When
+  // off, that path falls back to `bg` and blends with the silhouette.
   diamondSize:        f32,
   diamondWireframe:   f32,
   diamondFacetColor:  f32,
-  _diamondPad2:       f32,
+  diamondTirDebug:    f32,
   pills:              array<PillGpu, MAX_PILLS>,
 };
 
@@ -961,6 +964,12 @@ fn backExit(hitP: vec3<f32>, r1: vec3<f32>, shapeId: i32, pillIdx: u32, internal
   let roEntry = hitP + r1 * MIN_STEP;
   if (shapeId == 2) { return cubeAnalyticExit(roEntry, r1, pillIdx); }
   if (shapeId == 3) { return plateAnalyticExit(roEntry, r1, pillIdx); }
+  // Phase B: diamond uses an analytical polytope exit + 2-bounce TIR
+  // (wired in the wavelength loop below). The analytical normal eliminates
+  // the finite-diff gradient degeneracy at facet edges that previously
+  // sent TIR fallback to `reflSrc` and produced the "sudden face
+  // appearing" tumble artifact.
+  if (shapeId == 4) { return diamondAnalyticExit(roEntry, r1, pillIdx); }
   let pExit = insideTrace(hitP, r1, internalMax);
   return CubeExit(pExit, -sceneNormal(pExit));
 }
@@ -1024,14 +1033,15 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   let isCube    = shapeId == 2;
   let isPlate   = shapeId == 3;
   let isDiamond = shapeId == 4;
-  // `hasAnalyticExit` gates back-exit dispatch (cube/plate only — diamond
-  // reuses the generic `insideTrace` per Phase A scope). `hasMotionPivot`
-  // gates the TAA reprojection call below: a shape needs a per-frame
-  // rotation uniform (cubeRot / plateRot / diamondRot) for reprojection to
-  // make sense, which includes diamond even though diamond has no analytic
-  // back-exit. Keeping the two names distinct stops future refactors from
-  // accidentally coupling "has analytic exit" and "has motion pivot".
-  let hasAnalyticExit = isCube || isPlate;
+  // `hasMotionPivot` gates the TAA reprojection call below: a shape needs
+  // a per-frame rotation uniform (cubeRot / plateRot / diamondRot) for
+  // reprojection to make sense. Diamond had the rotation uniform from
+  // Phase A (and needed motion-pivot reprojection even while it still
+  // used the generic `insideTrace`); Phase B added the analytical exit
+  // for diamond, which incidentally made this set match the
+  // `backExit()` analytic-exit dispatch. If a future shape gets a
+  // rotation uniform WITHOUT an analytic exit (or vice versa), split
+  // this back into two names.
   let hasMotionPivot  = isCube || isPlate || isDiamond;
 
   // Bg-fallback short-circuit. Run BEFORE `sceneNormal` because WGSL `select`
@@ -1252,7 +1262,92 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     let r2TIR       = r2dot < 1e-4 && !r2NaN;
     let r2OOB       = !uvInBounds;
     if (r2TIR) {
-      refractL = reflSrc;
+      // Phase B: for diamond, try a short chain of internal bounces before
+      // falling back. Each iteration reflects the inside ray off the
+      // current facet, analytically finds the NEXT facet, and tries to
+      // refract out. Two bounces is the sweet spot: the 1st bounce catches
+      // pavilion↔crown paths (bottom + side view sparkle), the 2nd catches
+      // pavilion↔pavilion↔crown paths (some top-view rays). A 3rd bounce
+      // measurably improves top-view coverage but the payoff vs per-pixel
+      // cost (one extra 57-plane analytical exit per wavelength) drops off
+      // fast. The Phase A fallback (`reflSrc`) substituted the front-face
+      // external-reflection photo sample, which read as "other facets
+      // suddenly appearing" when TIR pixels flickered across facet
+      // boundaries during tumble — we're replacing that with the bounce
+      // chain + a clean bg blend on exhaustion.
+      // Gate the bounce chain on exact mode. In approx mode (useHero),
+      // pExit/nBack are the HERO wavelength's back-face exit shared across
+      // all λ (see the `!useHero` branch that ran backExit above), and
+      // heroLambda jitters frame-to-frame; running the bounce chain off
+      // a hero-exit origin would pick a different facet for the second
+      // bounce each frame and produce visible flicker at TIR boundaries.
+      // Approx-mode diamond falls back to reflSrc like every non-diamond
+      // shape — same trade-off Phase A accepted for approx mode's
+      // per-frame speed win.
+      if (isDiamond && !useHero) {
+        var curR1    = r1;
+        var curNBack = nBack;
+        var curP     = pExit;
+        var outDir: vec3<f32> = vec3<f32>(0.0);
+        var resolved: bool    = false;
+        // WGSL loop guard: 2 iterations = 1st + 2nd bounce. If both still
+        // TIR, we've hit a light path that needs ≥3 internal bounces to
+        // escape; the fallback below handles it.
+        for (var bounce: u32 = 0u; bounce < 2u; bounce = bounce + 1u) {
+          let bouncedR1 = reflect(curR1, curNBack);
+          // Use `curP` directly — no MIN_STEP bias. `diamondAnalyticExit`
+          // filters zero-length self-hits via its own DIAMOND_BOUNCE_EPS
+          // (0.01 px, ~25× tighter than the sphere-tracer HIT_EPS). A
+          // full MIN_STEP bias would overshoot nearby facets: e.g. an
+          // upper-half→girdle second bounce can resolve in under 0.1 px
+          // of ray travel, which the 0.5 px bias would jump clean past,
+          // putting `roBounce` outside the adjacent facet's half-space
+          // and picking a far wrong facet instead.
+          let exN = diamondAnalyticExit(curP, bouncedR1, analyticIdx);
+          let trial    = refract(bouncedR1, exN.nBack, ior);
+          let trialDot = dot(trial, trial);
+          // Self-compare catches NaN (WGSL's `<` against NaN is always
+          // false, same pattern as the outer-loop r2NaN guard above).
+          let trialNaN = trialDot != trialDot;
+          if (trialDot >= 1e-4 && !trialNaN) {
+            outDir   = trial;
+            resolved = true;
+            break;
+          }
+          // Still TIR. Move the "current" state to this bounce's exit and
+          // try the next iteration. Using `exN.nBack` (inward-facing) for
+          // the next reflect() is sign-invariant per reflect's definition
+          // but semantically correct here — we're bouncing the ray off
+          // that facet going back inside the glass for another try.
+          curR1    = bouncedR1;
+          curNBack = exN.nBack;
+          curP     = exN.pWorld;
+        }
+        if (resolved) {
+          // UV shift uses (outDir - rd) on the same parallax approximation
+          // as the non-bounced path; the spatial shift between the chained
+          // exit points is negligible at the diamond's pixel scale vs the
+          // photo's assumed distance behind the plane.
+          let uvOffB    = uv + (outDir - rd).xy * strength;
+          let uvCoverB  = coverUv(uvOffB);
+          let inBoundsB = all(uvCoverB >= vec2<f32>(0.0)) && all(uvCoverB <= vec2<f32>(1.0));
+          refractL = select(
+            bg,
+            textureSampleLevel(photoTex, photoSmp, uvCoverB, photoLod).rgb,
+            inBoundsB,
+          );
+        } else {
+          // Exhausted bounce chain. Production: blend with silhouette
+          // (`bg`). Debug toggle: hot pink marker so the user can see
+          // exactly where the N-bounce chain still TIRs (drives the
+          // "do we need a 3rd bounce?" investigation).
+          refractL = select(bg, vec3<f32>(1.0, 0.2, 0.75), frame.diamondTirDebug > 0.5);
+        }
+      } else {
+        // Non-diamond shapes keep the Phase A fallback. Refactoring their
+        // TIR paths is Phase C territory.
+        refractL = reflSrc;
+      }
     } else if (r2NaN || r2OOB) {
       refractL = bg;
     } else {

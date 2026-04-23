@@ -30,6 +30,7 @@ export type FrameParams = {
   readonly diamondSize:        number;  // diamond: girdle diameter (px). Ignored for other shapes.
   readonly diamondWireframe:   boolean; // diamond: overlay facet edges on top of the rendering for debugging.
   readonly diamondFacetColor:  boolean; // diamond: flat-shade each facet class with a distinct debug colour.
+  readonly diamondTirDebug:    boolean; // diamond: paint hot pink where the 2-bounce TIR chain exhausts (vs blending with bg).
   readonly diamondView:        DiamondView; // diamond: 'free' tumbles, fixed views pin for reference-checking.
   readonly pills:              readonly Pill[];
 };
@@ -160,9 +161,7 @@ export function writeFrame(device: GPUDevice, buf: GPUBuffer, p: FrameParams): v
   scratch[diamondParamsBase + 0] = p.diamondSize;
   scratch[diamondParamsBase + 1] = p.diamondWireframe  ? 1 : 0;
   scratch[diamondParamsBase + 2] = p.diamondFacetColor ? 1 : 0;
-  // slot 3 left at scratch.fill(0)'s zero — reserved for a future diamond
-  // parameter (angle override, girdle thickness, etc.) without another
-  // layout bump.
+  scratch[diamondParamsBase + 3] = p.diamondTirDebug   ? 1 : 0;
 
   const pillBase  = diamondParamsBase + DIAMOND_PARAMS_FLOATS;
   const pillCount = Math.min(p.pills.length, MAX_PILLS);

@@ -14,6 +14,10 @@ import {
 const DIAMOND_ROT_FLOAT_OFFSET      = 20 + 12 + 12 + 12 + 12;   // HEAD + cubeRot + cubeRotPrev + plateRot + plateRotPrev
 const DIAMOND_ROT_PREV_FLOAT_OFFSET = DIAMOND_ROT_FLOAT_OFFSET + 12;
 const DIAMOND_ROT_FLOATS            = 12;
+// Diamond params block: 4 floats (diamondSize + wireframe + facetColor +
+// tirDebug), starting right after the plate params block (which itself
+// follows both diamond rotation blocks).
+const DIAMOND_PARAMS_FLOAT_OFFSET    = DIAMOND_ROT_PREV_FLOAT_OFFSET + 12 + 4; // + plateParams(4)
 
 // Minimal device + buffer mocks. writeFrame calls queue.writeBuffer exactly
 // once per invocation; we capture the source Float32Array and the offset
@@ -64,6 +68,7 @@ function baseParams(overrides: Partial<FrameParams>): FrameParams {
     diamondSize:        200,
     diamondWireframe:   false,
     diamondFacetColor:  false,
+    diamondTirDebug:    false,
     diamondView:        'free',
     pills:              [],
     ...overrides,
@@ -141,6 +146,46 @@ describe('writeFrame — diamond rotation slot selection', () => {
       closeToEvery(slice12(scratch, DIAMOND_ROT_PREV_FLOAT_OFFSET), expected);
     });
   }
+
+  it('writes diamond debug-boolean flags into the correct slots of the params block', () => {
+    // The diamond params block is 4 floats:
+    //   [diamondSize, diamondWireframe, diamondFacetColor, diamondTirDebug]
+    // Toggling each boolean must flip exactly ONE slot (not leak into a
+    // neighbour). Catches the "slot 2 vs slot 3 swap" regression that
+    // would silently re-route the TIR-debug toggle onto the facet-color
+    // path. Table of (param key, expected slot offset relative to
+    // diamondParamsBase).
+    type BoolKey = 'diamondWireframe' | 'diamondFacetColor' | 'diamondTirDebug';
+    const slots: [BoolKey, number][] = [
+      ['diamondWireframe',  1],
+      ['diamondFacetColor', 2],
+      ['diamondTirDebug',   3],
+    ];
+    for (const [key, slotOffset] of slots) {
+      for (const val of [false, true] as const) {
+        const { device, writes } = mockDevice();
+        const buf = {} as GPUBuffer;
+        writeFrame(device, buf, baseParams({ [key]: val } as Partial<FrameParams>));
+        const scratch = writes[0]!.src;
+        // The flagged slot should hold the boolean-as-float.
+        expect(scratch[DIAMOND_PARAMS_FLOAT_OFFSET + slotOffset]).toBe(val ? 1 : 0);
+      }
+    }
+    // Cross-check: with all three booleans false, slots 1-3 are all 0
+    // (slot 0 is diamondSize). Pins the layout so future additions don't
+    // silently stomp the existing values.
+    const { device, writes } = mockDevice();
+    const buf = {} as GPUBuffer;
+    writeFrame(device, buf, baseParams({
+      diamondWireframe:  false,
+      diamondFacetColor: false,
+      diamondTirDebug:   false,
+    }));
+    const scratch = writes[0]!.src;
+    expect(scratch[DIAMOND_PARAMS_FLOAT_OFFSET + 1]).toBe(0);
+    expect(scratch[DIAMOND_PARAMS_FLOAT_OFFSET + 2]).toBe(0);
+    expect(scratch[DIAMOND_PARAMS_FLOAT_OFFSET + 3]).toBe(0);
+  });
 
   it('writeFrame accepts every view in DIAMOND_VIEW_VALUES without throwing', () => {
     // The DiamondView union is derived from DIAMOND_VIEW_VALUES (see

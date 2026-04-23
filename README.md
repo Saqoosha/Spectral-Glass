@@ -86,12 +86,13 @@ every proxy fragment pink and see the rasterised silhouette.
   `waveAmp · sin(kx+t) · sin(ky+t)` while both faces ride that midsurface
   together, keeping thickness uniform — and a **round brilliant cut
   diamond** (58-facet Tolkowsky-ideal polytope, D_8-folded to 5 plane
-  evaluations + table cap + girdle cylinder). Cube, plate, and diamond
-  proxy corners are transformed by `transpose(rot)` so the rasterised
-  silhouette tracks the shader's rotation exactly — no √3 bounding-box
-  slack. Diamond ships its own 46-triangle exact-hull proxy instead of the
-  cube AABB the other shapes use, so sharp-facet silhouettes don't waste
-  fragments on AABB slack.
+  evaluations + table cap + girdle cylinder, with an analytical back-exit
+  and a **2-bounce TIR chain** to reproduce the characteristic sparkle).
+  Cube, plate, and diamond proxy corners are transformed by
+  `transpose(rot)` so the rasterised silhouette tracks the shader's
+  rotation exactly — no √3 bounding-box slack. Diamond ships its own
+  46-triangle exact-hull proxy instead of the cube AABB the other shapes
+  use, so sharp-facet silhouettes don't waste fragments on AABB slack.
 - **Ortho or perspective projection.** UI toggle. Ortho keeps the flat Liquid
   Glass aesthetic; perspective uses a pinhole camera at `(w/2, h/2, cameraZ)`
   with `cameraZ = (height/2) / tan(fov/2)` derived from the user-facing FOV.
@@ -101,10 +102,15 @@ every proxy fragment pink and see the rasterised silhouette.
   lookup tables.
 - **Two-surface refraction.** Front hit via primary sphere-trace, back exit via
   per-wavelength inside-trace (Exact mode) or shared hero-wavelength trace
-  (Approx mode, Wilkie 2014). Cube and plate both skip the inside-trace
-  entirely — their back-face exit is an analytical slab intersection (plus
-  Newton refinement for plate's wavy surface), ≈ 10× fewer SDF evals per
-  wavelength than pill / prism.
+  (Approx mode, Wilkie 2014). Cube, plate, and diamond skip the
+  inside-trace entirely — their back-face exit is analytical (slab
+  intersection for cube/plate, ≈ 10× fewer SDF evals per wavelength
+  than pill/prism; ray-polytope test against all 57 facet planes +
+  girdle cylinder for diamond — no SDF evals, just ≈ 60 dot products,
+  which is comparable in op count to an inside-trace but with NO march
+  loop, NO NaN-prone gradient, and access to the exact facet normal).
+  Diamond's exact facet normal eliminates the finite-diff degeneracy at
+  facet edges that caused TIR pixels to flicker during tumble.
 - **Per-wavelength Fresnel.** Blue λ has higher IOR → higher Schlick Fresnel
   → visible blue-tinged rim on diamonds and prisms (the classic "fire" of
   high-index crystals).
@@ -117,7 +123,15 @@ every proxy fragment pink and see the rasterised silhouette.
   average the noise, so N=8 stratified looks like N=16 uniform.
 - **TIR fallback.** When `refract()` returns zero at the back face, the
   wavelength contributes the external reflection instead of dropping — no
-  black holes inside the cube.
+  black holes inside the cube. For **diamond**, that fallback first tries
+  a short bounce chain (up to 2 internal reflections — each reflects off
+  the current facet, analytically finds the next facet, and tries to
+  refract out). This is where a brilliant cut's actual sparkle comes from
+  — light reflected off a pavilion facet exits via a crown facet at a new
+  angle. Only if the bounce chain still TIRs after 2 iterations does the
+  wavelength blend back into the silhouette. Approx mode sticks with the
+  shared hero-wavelength reflSrc fallback to avoid frame-to-frame flicker
+  from hero-jitter-driven bounce-path changes.
 - **Temporal accumulation.** `rgba16float` ping-pong history with EMA blend
   (α = 0.2 steady-state, 1.0 for one frame after a scene change so cube
   tail doesn't ghost in). When **Stop the world** freezes the scene, the
@@ -169,9 +183,11 @@ src/
 │   ├── sdfCube.ts              Rounded box / cube SDF (mirrors WGSL version)
 │   ├── cube.ts                 rz·rx rotation columns for the tumbling cube
 │   ├── plate.ts                rx·ry rotation columns for the tumbling plate
-│   └── diamond.ts              Tolkowsky-ideal brilliant-cut proportions,
-│                               facet-plane derivations, WGSL `const` emitter,
-│                               tumble + fixed-view rotation matrices
+│   ├── diamond.ts              Tolkowsky-ideal brilliant-cut proportions,
+│   │                           facet-plane derivations, WGSL `const` emitter,
+│   │                           tumble + fixed-view rotation matrices
+│   └── diamondExit.ts          JS mirror of the analytical ray-polytope
+│                               back-exit (Phase B regression reference)
 ├── persistence.ts              localStorage: validated load, debounced save, pagehide flush
 ├── photo.ts                    Picsum fetch → GPU texture (w/ gradient fallback)
 ├── pills.ts                    Pill state + shape-aware pointer drag
@@ -189,8 +205,10 @@ src/
     ├── postprocess.wgsl        Passthrough + FXAA fragment shaders + sRGB OETF
     ├── dispersion.wgsl         SDFs (pill/prism/cube/plate) + analytic exits + TAA reprojection + spectral dispersion fragment
     └── diamond.wgsl            Diamond-specific WGSL: `sdfDiamond` (D_8 folded),
-                                 wireframe + facet-colour debug overlays, exact
-                                 convex-hull proxy mesh, TAA pill-index picker
+                                 `diamondAnalyticExit` (ray-polytope back-exit
+                                 used by the 2-bounce TIR chain), wireframe + facet-
+                                 colour debug overlays, exact convex-hull proxy
+                                 mesh, TAA pill-index picker
 
 tests/                          Vitest unit tests for each math module
 docs/
