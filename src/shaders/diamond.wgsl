@@ -1,6 +1,6 @@
 // Diamond-specific WGSL — split from dispersion.wgsl to keep the main shader
 // focused on trace/SDF framework and isolate the brilliant-cut geometry work
-// (sdfDiamond + proxy mesh + pill picker). Intended home for future diamond-
+// (sdfDiamond + proxy mesh + analytic diamond intersections). Intended home for future diamond-
 // only trace paths so the diamond geometry stays in one file.
 //
 // Depends on:
@@ -187,30 +187,6 @@ fn sdfDiamondFacetColor(pIn: vec3<f32>, diameter: f32) -> vec3<f32> {
   if (d_girdle >= dMax) { return vec3<f32>(0.25, 1.0, 1.0);  }   // cyan   — girdle
   if (d_lhalf  >= dMax) { return vec3<f32>(1.0, 0.3, 1.0);   }   // magenta — lower half
   return                   vec3<f32>(1.0, 0.6, 0.15);            // orange — pavilion main
-}
-
-// -----------------------------------------------------------------------------
-// Pill picker for TAA reprojection
-// -----------------------------------------------------------------------------
-//
-// Needed by the TAA reprojection path so the rotation reprojection pivots
-// around the correct pill center — without this, multi-instance scenes
-// would reproject every diamond around pill[0]'s center, leaving
-// diamonds at any other position with wrong motion vectors and visible
-// ghost trails proportional to their on-screen distance from pill[0].
-// Also used by Phase B's analytical exit dispatch (`backExit` in
-// dispersion.wgsl) to pass the right pill index into `diamondAnalyticExit`.
-fn hitDiamondPillIdx(p: vec3<f32>) -> u32 {
-  let count = min(u32(frame.pillCount), MAX_PILLS);
-  var best:  u32 = 0u;
-  var bestD: f32 = 1e9;
-  for (var i: u32 = 0u; i < count; i = i + 1u) {
-    let pill  = frame.pills[i];
-    let local = p - pill.center;
-    let d     = abs(sdfDiamond(local, frame.diamondSize));
-    if (d < bestD) { bestD = d; best = i; }
-  }
-  return best;
 }
 
 // -----------------------------------------------------------------------------
@@ -536,4 +512,277 @@ fn diamondAnalyticExit(roWorld: vec3<f32>, rdWorld: vec3<f32>, pillIdx: u32) -> 
   // -sceneNormal). Caller uses it in refract() where the inside-facing
   // form is what the Snell math expects.
   return CubeExit(pWorld, -nOut);
+}
+
+struct DiamondFrontHit {
+  ok:     bool,
+  pWorld: vec3<f32>,
+  nFront: vec3<f32>,
+  pillIdx: u32,
+};
+
+struct DiamondCandidateWindow {
+  mode:      i32,         // 0 = all, 1 = filtered, 2 = none
+  centerDir: vec2<f32>,
+  cosMin:    f32,
+};
+
+const DIAMOND_STEP_PI_4: f32 = 0.7853981633974483;
+const DIAMOND_STEP_PI_8: f32 = 0.39269908169872414;
+
+fn diamondCandidateWindow(
+  rdL: vec3<f32>,
+  normalXYLen: f32,
+  nz: f32,
+  stepRad: f32,
+  wantsPositiveDenom: bool,
+) -> DiamondCandidateWindow {
+  let rho = length(rdL.xy);
+  if (rho < 1.0e-6 || normalXYLen < 1.0e-6) {
+    return DiamondCandidateWindow(0, vec2<f32>(1.0, 0.0), -1.0);
+  }
+
+  let threshold = -(nz * rdL.z) / (normalXYLen * rho);
+  let k         = select(-threshold, threshold, wantsPositiveDenom);
+  if (k >= 1.0) {
+    return DiamondCandidateWindow(2, vec2<f32>(1.0, 0.0), 2.0);
+  }
+  if (k <= -1.0) {
+    return DiamondCandidateWindow(0, vec2<f32>(1.0, 0.0), -1.0);
+  }
+
+  let dir       = rdL.xy / rho;
+  let centerDir = select(-dir, dir, wantsPositiveDenom);
+  let cosMin    = cos(acos(clamp(k, -1.0, 1.0)) + stepRad * 0.5 + 1.0e-3);
+  return DiamondCandidateWindow(1, centerDir, cosMin);
+}
+
+fn diamondWindowAccept(n: vec3<f32>, window: DiamondCandidateWindow) -> bool {
+  if (window.mode == 0) { return true; }
+  if (window.mode == 2) { return false; }
+  let nxyLen2 = max(dot(n.xy, n.xy), 1.0e-8);
+  let nxyDir  = n.xy * inverseSqrt(nxyLen2);
+  return dot(nxyDir, window.centerDir) >= window.cosMin;
+}
+
+fn pointInsideDiamondLocal(p: vec3<f32>, d: f32, eps: f32) -> bool {
+  if (p.z > DIAMOND_H_TOP * d + eps) { return false; }
+  if (length(p.xy) > DIAMOND_R_GIRDLE * d + eps) { return false; }
+
+  let oBezel = DIAMOND_BEZEL_O * d;
+  for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+    let n = DIAMOND_BEZEL_N_ARR[i];
+    if (dot(n, p) - oBezel > eps) { return false; }
+  }
+
+  let oStar = DIAMOND_STAR_O * d;
+  for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+    let n = DIAMOND_STAR_N_ARR[i];
+    if (dot(n, p) - oStar > eps) { return false; }
+  }
+
+  let oUhalf = DIAMOND_UPPER_HALF_O * d;
+  for (var i: u32 = 0u; i < 16u; i = i + 1u) {
+    let n = DIAMOND_UPPER_HALF_N_ARR[i];
+    if (dot(n, p) - oUhalf > eps) { return false; }
+  }
+
+  let oLhalf = DIAMOND_LOWER_HALF_O * d;
+  for (var i: u32 = 0u; i < 16u; i = i + 1u) {
+    let n = DIAMOND_LOWER_HALF_N_ARR[i];
+    if (dot(n, p) - oLhalf > eps) { return false; }
+  }
+
+  let oPav = DIAMOND_PAVILION_O * d;
+  for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+    let n = DIAMOND_PAVILION_N_ARR[i];
+    if (dot(n, p) - oPav > eps) { return false; }
+  }
+
+  return true;
+}
+
+fn diamondAnalyticHit(roWorld: vec3<f32>, rdWorld: vec3<f32>, pillIdx: u32) -> DiamondFrontHit {
+  let pill = frame.pills[pillIdx];
+  let d    = frame.diamondSize;
+  let roL  = frame.diamondRot * (roWorld - pill.center);
+  let rdL  = frame.diamondRot * rdWorld;
+
+  var bestT: f32       = 1.0e30;
+  var bestN: vec3<f32> = vec3<f32>(0.0);
+
+  if (rdL.z < 0.0) {
+    let tTable = (DIAMOND_H_TOP * d - roL.z) / rdL.z;
+    if (tTable > DIAMOND_BOUNCE_EPS && tTable < bestT) {
+      let pL = roL + rdL * tTable;
+      if (pointInsideDiamondLocal(pL, d, HIT_EPS)) {
+        bestT = tTable;
+        bestN = vec3<f32>(0.0, 0.0, 1.0);
+      }
+    }
+  }
+
+  let bezelWindow = diamondCandidateWindow(
+    rdL,
+    length(DIAMOND_BEZEL_N_ARR[0].xy),
+    DIAMOND_BEZEL_N_ARR[0].z,
+    DIAMOND_STEP_PI_4,
+    false,
+  );
+  let oBezel = DIAMOND_BEZEL_O * d;
+  for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+    let n = DIAMOND_BEZEL_N_ARR[i];
+    if (!diamondWindowAccept(n, bezelWindow)) { continue; }
+    let denom = dot(n, rdL);
+    if (denom >= 0.0) { continue; }
+    let t = (oBezel - dot(n, roL)) / denom;
+    if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+      let pL = roL + rdL * t;
+      if (pointInsideDiamondLocal(pL, d, HIT_EPS)) {
+        bestT = t;
+        bestN = n;
+      }
+    }
+  }
+
+  let starWindow = diamondCandidateWindow(
+    rdL,
+    length(DIAMOND_STAR_N_ARR[0].xy),
+    DIAMOND_STAR_N_ARR[0].z,
+    DIAMOND_STEP_PI_4,
+    false,
+  );
+  let oStar = DIAMOND_STAR_O * d;
+  for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+    let n = DIAMOND_STAR_N_ARR[i];
+    if (!diamondWindowAccept(n, starWindow)) { continue; }
+    let denom = dot(n, rdL);
+    if (denom >= 0.0) { continue; }
+    let t = (oStar - dot(n, roL)) / denom;
+    if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+      let pL = roL + rdL * t;
+      if (pointInsideDiamondLocal(pL, d, HIT_EPS)) {
+        bestT = t;
+        bestN = n;
+      }
+    }
+  }
+
+  let uhalfWindow = diamondCandidateWindow(
+    rdL,
+    length(DIAMOND_UPPER_HALF_N_ARR[0].xy),
+    DIAMOND_UPPER_HALF_N_ARR[0].z,
+    DIAMOND_STEP_PI_8,
+    false,
+  );
+  let oUhalf = DIAMOND_UPPER_HALF_O * d;
+  for (var i: u32 = 0u; i < 16u; i = i + 1u) {
+    let n = DIAMOND_UPPER_HALF_N_ARR[i];
+    if (!diamondWindowAccept(n, uhalfWindow)) { continue; }
+    let denom = dot(n, rdL);
+    if (denom >= 0.0) { continue; }
+    let t = (oUhalf - dot(n, roL)) / denom;
+    if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+      let pL = roL + rdL * t;
+      if (pointInsideDiamondLocal(pL, d, HIT_EPS)) {
+        bestT = t;
+        bestN = n;
+      }
+    }
+  }
+
+  let lhalfWindow = diamondCandidateWindow(
+    rdL,
+    length(DIAMOND_LOWER_HALF_N_ARR[0].xy),
+    DIAMOND_LOWER_HALF_N_ARR[0].z,
+    DIAMOND_STEP_PI_8,
+    false,
+  );
+  let oLhalf = DIAMOND_LOWER_HALF_O * d;
+  for (var i: u32 = 0u; i < 16u; i = i + 1u) {
+    let n = DIAMOND_LOWER_HALF_N_ARR[i];
+    if (!diamondWindowAccept(n, lhalfWindow)) { continue; }
+    let denom = dot(n, rdL);
+    if (denom >= 0.0) { continue; }
+    let t = (oLhalf - dot(n, roL)) / denom;
+    if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+      let pL = roL + rdL * t;
+      if (pointInsideDiamondLocal(pL, d, HIT_EPS)) {
+        bestT = t;
+        bestN = n;
+      }
+    }
+  }
+
+  let pavWindow = diamondCandidateWindow(
+    rdL,
+    length(DIAMOND_PAVILION_N_ARR[0].xy),
+    DIAMOND_PAVILION_N_ARR[0].z,
+    DIAMOND_STEP_PI_4,
+    false,
+  );
+  let oPav = DIAMOND_PAVILION_O * d;
+  for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+    let n = DIAMOND_PAVILION_N_ARR[i];
+    if (!diamondWindowAccept(n, pavWindow)) { continue; }
+    let denom = dot(n, rdL);
+    if (denom >= 0.0) { continue; }
+    let t = (oPav - dot(n, roL)) / denom;
+    if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+      let pL = roL + rdL * t;
+      if (pointInsideDiamondLocal(pL, d, HIT_EPS)) {
+        bestT = t;
+        bestN = n;
+      }
+    }
+  }
+
+  let a = rdL.x * rdL.x + rdL.y * rdL.y;
+  if (a > 1.0e-6) {
+    let b = 2.0 * (roL.x * rdL.x + roL.y * rdL.y);
+    let rG = DIAMOND_R_GIRDLE * d;
+    let c  = roL.x * roL.x + roL.y * roL.y - rG * rG;
+    let disc = b * b - 4.0 * a * c;
+    if (disc >= 0.0) {
+      let sqrtDisc = sqrt(disc);
+      let t0 = (-b - sqrtDisc) / (2.0 * a);
+      let t1 = (-b + sqrtDisc) / (2.0 * a);
+      for (var rootIdx: u32 = 0u; rootIdx < 2u; rootIdx = rootIdx + 1u) {
+        let t = select(t1, t0, rootIdx == 0u);
+        if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+          let pL = roL + rdL * t;
+          if (pointInsideDiamondLocal(pL, d, HIT_EPS)) {
+            let invLen = inverseSqrt(max(dot(pL.xy, pL.xy), 1.0e-8));
+            bestT = t;
+            bestN = vec3<f32>(pL.x * invLen, pL.y * invLen, 0.0);
+          }
+        }
+      }
+    }
+  }
+
+  if (dot(bestN, bestN) < 0.5) {
+    return DiamondFrontHit(false, roWorld, vec3<f32>(0.0), pillIdx);
+  }
+
+  let pL     = roL + rdL * bestT;
+  let rotT   = transpose(frame.diamondRot);
+  let pWorld = rotT * pL + pill.center;
+  let nWorld = rotT * bestN;
+  return DiamondFrontHit(true, pWorld, nWorld, pillIdx);
+}
+
+fn diamondAnalyticHitScene(roWorld: vec3<f32>, rdWorld: vec3<f32>) -> DiamondFrontHit {
+  var bestT   = 1.0e30;
+  var bestHit = DiamondFrontHit(false, roWorld, vec3<f32>(0.0), 0u);
+  for (var pillIdx: u32 = 0u; pillIdx < u32(frame.pillCount); pillIdx = pillIdx + 1u) {
+    let hit = diamondAnalyticHit(roWorld, rdWorld, pillIdx);
+    if (!hit.ok) { continue; }
+    let t = dot(hit.pWorld - roWorld, rdWorld);
+    if (t > DIAMOND_BOUNCE_EPS && t < bestT) {
+      bestT   = t;
+      bestHit = hit;
+    }
+  }
+  return bestHit;
 }

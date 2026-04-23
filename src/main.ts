@@ -502,7 +502,7 @@ async function main(): Promise<void> {
       });
 
       const encoder = ctx.device.createCommandEncoder({ label: 'frame' });
-      encodeScene(pl, history, post.intermediate, pills.length, encoder, perf?.writes);
+      encodeScene(pl, history, post.intermediate, pills.length, SHAPE_ID[params.shape], encoder, perf?.writes);
       encodePost(ctx, post, encoder, params.aaMode);
       if (perf) perf.resolve(encoder);
       ctx.device.queue.submit([encoder.finish()]);

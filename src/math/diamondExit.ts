@@ -93,6 +93,77 @@ const O_PAVILION    = DIAMOND_INTERNALS.planes.pavilion.offset;
 
 type State = { bestT: number; bestN: Vec3; bestClass: DiamondFacetClass };
 
+type PlaneClassSpec = {
+  readonly normals: readonly Vec3[];
+  readonly offset: number;
+  readonly facetClass: Exclude<DiamondFacetClass, 'table' | 'girdle' | 'none'>;
+  readonly stepRad: number;
+};
+
+const OCTANT_STEP = Math.PI / 4;
+const HALF_OCTANT_STEP = Math.PI / 8;
+const ANGLE_EPS = 1e-6;
+const POINT_INSIDE_EPS = DIAMOND_HIT_EPS * 8;
+
+const PLANE_CLASS_SPECS: readonly PlaneClassSpec[] = [
+  { normals: DIAMOND_BEZEL_N_ARR,      offset: O_BEZEL,      facetClass: 'bezel',     stepRad: OCTANT_STEP },
+  { normals: DIAMOND_STAR_N_ARR,       offset: O_STAR,       facetClass: 'star',      stepRad: OCTANT_STEP },
+  { normals: DIAMOND_UPPER_HALF_N_ARR, offset: O_UPPER_HALF, facetClass: 'upperHalf', stepRad: HALF_OCTANT_STEP },
+  { normals: DIAMOND_LOWER_HALF_N_ARR, offset: O_LOWER_HALF, facetClass: 'lowerHalf', stepRad: HALF_OCTANT_STEP },
+  { normals: DIAMOND_PAVILION_N_ARR,   offset: O_PAVILION,   facetClass: 'pavilion',  stepRad: OCTANT_STEP },
+] as const;
+
+function wrapAnglePi(angle: number): number {
+  let a = (angle + Math.PI) % (2 * Math.PI);
+  if (a < 0) a += 2 * Math.PI;
+  return a - Math.PI;
+}
+
+function eachCandidateNormal(
+  normals: readonly Vec3[],
+  stepRad: number,
+  rd: Vec3,
+  wantsPositiveDenom: boolean,
+  visit: (n: Vec3) => void,
+): void {
+  const rho = Math.hypot(rd[0], rd[1]);
+  const normalXY = Math.hypot(normals[0]?.[0] ?? 0, normals[0]?.[1] ?? 0);
+  if (rho < 1e-9 || normalXY < 1e-9) {
+    for (const n of normals) visit(n);
+    return;
+  }
+
+  const phiRd = Math.atan2(rd[1], rd[0]);
+  const nz = normals[0]?.[2] ?? 0;
+  const threshold = -(nz * rd[2]) / (normalXY * rho);
+  const centerPhi = wantsPositiveDenom ? phiRd : phiRd + Math.PI;
+  const k = wantsPositiveDenom ? threshold : -threshold;
+  if (k >= 1) return;
+  if (k <= -1) {
+    for (const n of normals) visit(n);
+    return;
+  }
+
+  const window = Math.acos(Math.max(-1, Math.min(1, k))) + stepRad * 0.5 + ANGLE_EPS;
+  for (const n of normals) {
+    const phiN = Math.atan2(n[1], n[0]);
+    const delta = Math.abs(wrapAnglePi(phiN - centerPhi));
+    if (delta <= window) visit(n);
+  }
+}
+
+function pointInsideDiamond(p: Vec3, eps: number): boolean {
+  if (p[2] > H_TOP + eps) return false;
+  if (Math.hypot(p[0], p[1]) > R_GIRDLE + eps) return false;
+  for (const spec of PLANE_CLASS_SPECS) {
+    for (const n of spec.normals) {
+      const d = n[0] * p[0] + n[1] * p[1] + n[2] * p[2] - spec.offset;
+      if (d > eps) return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Ray-plane test over a rotated-copies array of one facet class. All planes
  * in a class share the same offset (rotation-invariant offset — see
@@ -109,13 +180,14 @@ function testPlaneClass(
   normals: readonly Vec3[],
   offset: number,
   facetClass: DiamondFacetClass,
+  stepRad: number,
 ): void {
-  for (const n of normals) {
+  eachCandidateNormal(normals, stepRad, rd, /* wantsPositiveDenom */ true, (n) => {
     const denom = n[0] * rd[0] + n[1] * rd[1] + n[2] * rd[2];
     // Skip parallel and inward-facing cases. A tiny positive denominator
     // blows t up → the min-t filter naturally rejects it, but skipping
     // early avoids floating-point edge cases.
-    if (denom <= 0) continue;
+    if (denom <= 0) return;
     const num = offset - (n[0] * ro[0] + n[1] * ro[1] + n[2] * ro[2]);
     const t   = num / denom;
     if (t > DIAMOND_HIT_EPS && t < state.bestT) {
@@ -123,7 +195,34 @@ function testPlaneClass(
       state.bestN     = n;
       state.bestClass = facetClass;
     }
-  }
+  });
+}
+
+function testPlaneClassHit(
+  state: State,
+  ro: Vec3,
+  rd: Vec3,
+  normals: readonly Vec3[],
+  offset: number,
+  facetClass: DiamondFacetClass,
+  stepRad: number,
+): void {
+  eachCandidateNormal(normals, stepRad, rd, /* wantsPositiveDenom */ false, (n) => {
+    const denom = n[0] * rd[0] + n[1] * rd[1] + n[2] * rd[2];
+    if (denom >= 0) return;
+    const num = offset - (n[0] * ro[0] + n[1] * ro[1] + n[2] * ro[2]);
+    const t = num / denom;
+    if (t <= DIAMOND_HIT_EPS || t >= state.bestT) return;
+    const p: Vec3 = [
+      ro[0] + t * rd[0],
+      ro[1] + t * rd[1],
+      ro[2] + t * rd[2],
+    ];
+    if (!pointInsideDiamond(p, POINT_INSIDE_EPS)) return;
+    state.bestT     = t;
+    state.bestN     = n;
+    state.bestClass = facetClass;
+  });
 }
 
 /**
@@ -166,11 +265,9 @@ export function diamondAnalyticExit(ro: Vec3, rd: Vec3): DiamondExit {
   }
 
   // Crown + pavilion facet classes (5 classes × 8–16 rotated copies each).
-  testPlaneClass(state, ro, rd, DIAMOND_BEZEL_N_ARR,      O_BEZEL,      'bezel');
-  testPlaneClass(state, ro, rd, DIAMOND_STAR_N_ARR,       O_STAR,       'star');
-  testPlaneClass(state, ro, rd, DIAMOND_UPPER_HALF_N_ARR, O_UPPER_HALF, 'upperHalf');
-  testPlaneClass(state, ro, rd, DIAMOND_LOWER_HALF_N_ARR, O_LOWER_HALF, 'lowerHalf');
-  testPlaneClass(state, ro, rd, DIAMOND_PAVILION_N_ARR,   O_PAVILION,   'pavilion');
+  for (const spec of PLANE_CLASS_SPECS) {
+    testPlaneClass(state, ro, rd, spec.normals, spec.offset, spec.facetClass, spec.stepRad);
+  }
 
   // Girdle cylinder: radius R_GIRDLE, z-band [-H_GIRDLE_HALF, +H_GIRDLE_HALF].
   // Quadratic in t: let p = ro + t·rd; solve p.x² + p.y² = R_GIRDLE².
@@ -220,6 +317,67 @@ export function diamondAnalyticExit(ro: Vec3, rd: Vec3): DiamondExit {
     pLocal,
     nLocal:     state.bestN,
     t:          state.bestT,
+    facetClass: state.bestClass,
+  };
+}
+
+/**
+ * Analytical front-hit for the convex diamond surface. Mirrors the back-exit
+ * path but solves the "outside -> first surface" case instead of
+ * "inside -> first exit". Returns the exact outward normal of the hit facet.
+ */
+export function diamondAnalyticHit(ro: Vec3, rd: Vec3): DiamondExit {
+  const state: State = { bestT: Infinity, bestN: [0, 0, 0], bestClass: 'none' };
+
+  if (rd[2] < 0) {
+    const t = (H_TOP - ro[2]) / rd[2];
+    if (t > DIAMOND_HIT_EPS) {
+      const p: Vec3 = [ro[0] + t * rd[0], ro[1] + t * rd[1], ro[2] + t * rd[2]];
+      if (pointInsideDiamond(p, POINT_INSIDE_EPS)) {
+        state.bestT = t;
+        state.bestN = [0, 0, 1];
+        state.bestClass = 'table';
+      }
+    }
+  }
+
+  for (const spec of PLANE_CLASS_SPECS) {
+    testPlaneClassHit(state, ro, rd, spec.normals, spec.offset, spec.facetClass, spec.stepRad);
+  }
+
+  const a = rd[0] * rd[0] + rd[1] * rd[1];
+  if (a > 1.0e-6) {
+    const b = 2 * (ro[0] * rd[0] + ro[1] * rd[1]);
+    const c = ro[0] * ro[0] + ro[1] * ro[1] - R_GIRDLE * R_GIRDLE;
+    const disc = b * b - 4 * a * c;
+    if (disc >= 0) {
+      const sqrtDisc = Math.sqrt(disc);
+      const roots = [(-b - sqrtDisc) / (2 * a), (-b + sqrtDisc) / (2 * a)];
+      for (const t of roots) {
+        if (t <= DIAMOND_HIT_EPS || t >= state.bestT) continue;
+        const p: Vec3 = [ro[0] + t * rd[0], ro[1] + t * rd[1], ro[2] + t * rd[2]];
+        if (!pointInsideDiamond(p, POINT_INSIDE_EPS)) continue;
+        const invLen = 1 / Math.hypot(p[0], p[1]);
+        state.bestT = t;
+        state.bestN = [p[0] * invLen, p[1] * invLen, 0];
+        state.bestClass = 'girdle';
+        break;
+      }
+    }
+  }
+
+  if (state.bestClass === 'none') {
+    return { pLocal: ro, nLocal: [0, 0, 0], t: Infinity, facetClass: 'none' };
+  }
+
+  return {
+    pLocal: [
+      ro[0] + state.bestT * rd[0],
+      ro[1] + state.bestT * rd[1],
+      ro[2] + state.bestT * rd[2],
+    ],
+    nLocal: state.bestN,
+    t: state.bestT,
     facetClass: state.bestClass,
   };
 }

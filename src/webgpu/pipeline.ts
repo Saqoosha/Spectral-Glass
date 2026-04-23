@@ -37,6 +37,8 @@ export type Pipeline = {
    *  proxy silhouette — for the default 4-pill layout that's ~25 % of
    *  screen; scales with on-screen shape area. */
   readonly proxy: GPURenderPipeline;
+  /** Diamond-only proxy pass: dedicated fragment path with analytic front hit. */
+  readonly diamondProxy: GPURenderPipeline;
   bindGroups:     [GPUBindGroup, GPUBindGroup];  // index = history read slot (1 - current)
 };
 
@@ -56,8 +58,8 @@ export async function createPipeline(
   //   3. src/shaders/dispersion/*.wgsl — split by concern: frame/uniforms,
   //      sdf primitives, scene aggregate, trace + analytic exits, spectral
   //      helpers, proxy mesh + vs_proxy, fragment (fs_bg/fs_main).
-  //   4. diamond.wgsl — sdfDiamond / hitDiamondPillIdx / diamondProxyVertex /
-  //      diamondAnalyticExit. Placed after sdf_primitives, before scene.wgsl
+  //   4. diamond.wgsl — sdfDiamond / diamondProxyVertex /
+  //      diamondAnalyticExit / diamondAnalyticHit. Placed after sdf_primitives, before scene.wgsl
   //      so sceneSdf → sdfDiamond resolves; vs_proxy → diamondProxyVertex
   //      also resolves (forward refs are legal in WGSL).
   // Injecting at pipeline build time rather than hand-copying the constants
@@ -151,9 +153,18 @@ export async function createPipeline(
     primitive: { topology: 'triangle-list', cullMode: 'back', frontFace: 'cw' },
   });
 
+  const diamondProxy = await device.createRenderPipelineAsync({
+    label: 'diamond-proxy-pipeline',
+    layout: pipelineLayout,
+    vertex:   { module, entryPoint: 'vs_proxy' },
+    fragment: { module, entryPoint: 'fs_main_diamond', targets },
+    primitive: { topology: 'triangle-list', cullMode: 'back', frontFace: 'cw' },
+  });
+
   return {
     bg,
     proxy,
+    diamondProxy,
     bindGroups: buildBindGroups(ctx, bg, frameBuf, photo, envmap, history),
   };
 }
@@ -202,6 +213,7 @@ export function encodeScene(
   history:      History,
   intermediate: Intermediate,
   pillCount:    number,
+  shapeId:      number,
   encoder:      GPUCommandEncoder,
   timestampWrites?: GPURenderPassTimestampWrites,
 ): void {
@@ -239,7 +251,7 @@ export function encodeScene(
   // per-shape draw counts) for host-side simplicity — the wasted invocations
   // are negligible next to the proxy fragment work.
   if (pillCount > 0) {
-    pass.setPipeline(pl.proxy);
+    pass.setPipeline(shapeId === 4 ? pl.diamondProxy : pl.proxy);
     pass.draw(PROXY_VERTS_PER_INSTANCE, pillCount, 0, 0);
   }
   pass.end();

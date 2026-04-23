@@ -5,6 +5,11 @@ struct FsOut {
   @location(1) history: vec4<f32>,
 };
 
+struct ProxyFsIn {
+  @builtin(position) fragCoord: vec4<f32>,
+  @location(0) @interpolate(flat) instanceIdx: u32,
+};
+
 // Cheap background pass: sample photo, blend history, done. No sphere-trace,
 // no refraction, no per-wavelength loop. Runs for the whole screen; the proxy
 // pass then overrides covered pixels with the heavy shader's output.
@@ -54,6 +59,20 @@ fn adaptiveBlend(prev: vec3<f32>, next: vec3<f32>) -> vec3<f32> {
   return mix(prev, next, alpha);
 }
 
+fn proxyBgOut(uv: vec2<f32>, bg: vec3<f32>) -> FsOut {
+  var bgFinal = bg;
+  if (frame.debugProxy > 0.5) {
+    bgFinal = mix(bg, vec3<f32>(1.0, 0.3, 0.7), 0.5);
+  }
+
+  let prevMiss = textureSampleLevel(historyTex, historySmp, uv, 0.0).rgb;
+  let blend    = adaptiveBlend(prevMiss, bgFinal);
+  var out: FsOut;
+  out.color   = vec4<f32>(blend, 1.0);
+  out.history = vec4<f32>(blend, 1.0);
+  return out;
+}
+
 // Back-face exit dispatcher. Centralises the entry-bias trick (push the
 // front-hit point one MIN_STEP inward along the refracted ray so the
 // analytic exits' slab math doesn't divide 0/0 → silent wrong-axis pick →
@@ -76,9 +95,9 @@ fn backExit(hitP: vec3<f32>, r1: vec3<f32>, shapeId: i32, pillIdx: u32, internal
 }
 
 @fragment
-fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
+fn fs_main(in: ProxyFsIn) -> FsOut {
   // DOM-top-origin pixel coords so they match pointer events and defaultPills.
-  let px = fragCoord.xy;
+  let px = in.fragCoord.xy;
   let uv = px / frame.resolution;
 
   // Temporal antialiasing: jitter the ray's sub-pixel position by a
@@ -161,16 +180,7 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   // would still cost 6 SDF evals per miss pixel, and the proxy mesh
   // intentionally over-covers the silhouette so misses are common.
   if (!h.ok) {
-    var bgFinal = bg;
-    if (frame.debugProxy > 0.5) {
-      bgFinal = mix(bg, vec3<f32>(1.0, 0.3, 0.7), 0.5);
-    }
-    let prevMiss = textureSampleLevel(historyTex, historySmp, uv, 0.0).rgb;
-    let blend    = adaptiveBlend(prevMiss, bgFinal);
-    var bgOut: FsOut;
-    bgOut.color   = vec4<f32>(blend, 1.0);
-    bgOut.history = vec4<f32>(blend, 1.0);
-    return bgOut;
+    return proxyBgOut(uv, bg);
   }
 
   // Hit path. Pill-index scan is per-shape; gated on h.ok above so misses
@@ -182,7 +192,7 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   else if (isPrism)   { analyticIdx = hitPrismPillIdx(h.p); }
   else if (isCube)    { analyticIdx = hitCubePillIdx(h.p); }
   else if (isPlate)   { analyticIdx = hitPlatePillIdx(h.p); }
-  else if (isDiamond) { analyticIdx = hitDiamondPillIdx(h.p); }
+  else if (isDiamond) { analyticIdx = in.instanceIdx; }
 
   // `sceneNormal` returns the zero vector when the local gradient is too
   // small to normalise (silhouette / wave-crest singularity). Falling back
@@ -198,16 +208,7 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
     nFront = sceneNormal(h.p);
   }
   if (dot(nFront, nFront) <= 0.5) {
-    var bgFinal = bg;
-    if (frame.debugProxy > 0.5) {
-      bgFinal = mix(bg, vec3<f32>(1.0, 0.3, 0.7), 0.5);
-    }
-    let prevMiss = textureSampleLevel(historyTex, historySmp, uv, 0.0).rgb;
-    let blend    = adaptiveBlend(prevMiss, bgFinal);
-    var bgOut: FsOut;
-    bgOut.color   = vec4<f32>(blend, 1.0);
-    bgOut.history = vec4<f32>(blend, 1.0);
-    return bgOut;
+    return proxyBgOut(uv, bg);
   }
 
   let n_d      = frame.n_d;
@@ -628,6 +629,218 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
   if (isDiamond && frame.diamondWireframe > 0.5) {
     let pillCenter = frame.pills[analyticIdx].center;
     let edgeW      = sdfDiamondEdgeWeight(h.p - pillCenter, frame.diamondSize);
+    display = mix(display, vec3<f32>(1.0, 0.25, 0.25), edgeW * 0.85);
+  }
+
+  var o: FsOut;
+  o.color   = vec4<f32>(display, 1.0);
+  o.history = vec4<f32>(blend, 1.0);
+  return o;
+}
+
+@fragment
+fn fs_main_diamond(in: ProxyFsIn) -> FsOut {
+  let px = in.fragCoord.xy;
+  let uv = px / frame.resolution;
+
+  var rayPx = px;
+  if (frame.taaEnabled > 0.5) {
+    let taaJit = vec2<f32>(
+      hash21(px + vec2<f32>(frame.time * 7.19, 3.141)) - 0.5,
+      hash21(px + vec2<f32>(frame.time * 11.23, 6.283)) - 0.5,
+    );
+    rayPx = px + taaJit;
+  }
+
+  var ro: vec3<f32>;
+  var rd: vec3<f32>;
+  if (frame.projection > 0.5) {
+    ro = vec3<f32>(frame.resolution * 0.5, frame.cameraZ);
+    rd = normalize(vec3<f32>(rayPx, 0.0) - ro);
+  } else {
+    ro = vec3<f32>(rayPx, 400.0);
+    rd = vec3<f32>(0.0, 0.0, -1.0);
+  }
+
+  let bgPhoto = textureSampleLevel(photoTex, photoSmp, coverUv(uv), 0.0).rgb;
+  let bgEnv   = sampleEnvmap(rd);
+  let bg      = select(bgPhoto, bgEnv, frame.envmapEnabled > 0.5);
+
+  // Unlike the generic path, this dedicated diamond path bypasses the
+  // scene-wide sphereTrace. Keep the front hit scene-wide anyway so overlapping
+  // diamond proxies still resolve to the nearest instance even though the proxy
+  // pass has no depth buffer.
+  let front       = diamondAnalyticHitScene(ro, rd);
+  if (!front.ok) {
+    return proxyBgOut(uv, bg);
+  }
+
+  let analyticIdx = front.pillIdx;
+  let hP     = front.pWorld;
+  // Keep the analytic front-hit POSITION (cheap, exact, no 64-step march),
+  // but use the SDF gradient for the entry normal. The exact per-facet normal
+  // makes every crown facet transition razor-sharp, which visually doubles the
+  // back-facet lines seen through the front surface under FXAA. `sceneNormal`
+  // preserves the old soft blend across facet boundaries while retaining the
+  // performance win from the analytic hit point.
+  let nFront = sceneNormal(front.pWorld);
+  if (dot(nFront, nFront) <= 0.5) {
+    return proxyBgOut(uv, bg);
+  }
+
+  let n_d      = frame.n_d;
+  let V_d      = frame.V_d;
+  let N        = clamp(i32(frame.sampleCount), 1, MAX_N);
+  let strength = frame.refractionStrength;
+  let jitter   = frame.jitter;
+  let useHero  = frame.refractionMode > 0.5;
+
+  var sharedExit  = hP;
+  var sharedNBack = -nFront;
+  if (useHero) {
+    let iorHero = cauchyIor(frame.heroLambda, n_d, V_d);
+    let r1hero  = refract(rd, nFront, 1.0 / iorHero);
+    if (dot(r1hero, r1hero) >= 1e-4) {
+      let ex = diamondAnalyticExit(hP + r1hero * MIN_STEP, r1hero, analyticIdx);
+      sharedExit  = ex.pWorld;
+      sharedNBack = ex.nBack;
+    }
+  }
+
+  let refl = reflect(rd, nFront);
+  let reflUv     = uv + (refl - rd).xy * 0.2;
+  let reflCover  = coverUv(reflUv);
+  let reflInBnds = all(reflCover >= vec2<f32>(0.0)) && all(reflCover <= vec2<f32>(1.0));
+  let reflRaw    = textureSampleLevel(photoTex, photoSmp, reflCover, 0.0).rgb;
+  let reflLegacy = select(bg, reflRaw, reflInBnds) * vec3<f32>(0.85, 0.9, 1.0);
+  let reflSrc    = select(reflLegacy, sampleEnvmap(refl), frame.envmapEnabled > 0.5);
+
+  let cosT     = max(dot(-rd, nFront), 0.0);
+  let photoLod = clamp(-log2(max(cosT, 0.02)) - 1.0, 0.0, 6.0);
+  let pxJit    = hash21(px + vec2<f32>(jitter * 1000.0, frame.time * 37.0)) - 0.5;
+
+  var rgbAccum  = vec3<f32>(0.0);
+  var rgbWeight = vec3<f32>(0.0);
+  for (var i: i32 = 0; i < N; i = i + 1) {
+    let t      = (f32(i) + 0.5 + pxJit) / f32(N);
+    let lambda = mix(380.0, 700.0, t);
+    let ior    = cauchyIor(lambda, n_d, V_d);
+    let r1     = refract(rd, nFront, 1.0 / ior);
+    if (dot(r1, r1) < 1e-4) { continue; }
+
+    var pExit = sharedExit;
+    var nBack = sharedNBack;
+    if (!useHero) {
+      let ex = diamondAnalyticExit(hP + r1 * MIN_STEP, r1, analyticIdx);
+      pExit = ex.pWorld;
+      nBack = ex.nBack;
+    }
+    let r2 = refract(r1, nBack, ior);
+
+    var refractL: vec3<f32>;
+    let uvOff      = uv + (r2 - rd).xy * strength;
+    let uvCover    = coverUv(uvOff);
+    let uvInBounds = all(uvCover >= vec2<f32>(0.0)) && all(uvCover <= vec2<f32>(1.0));
+    let r2dot      = dot(r2, r2);
+    let r2NaN      = r2dot != r2dot;
+    let r2TIR      = r2dot < 1e-4 && !r2NaN;
+    let r2OOB      = !uvInBounds;
+    if (r2TIR) {
+      if (!useHero) {
+        var curR1    = r1;
+        var curNBack = nBack;
+        var curP     = pExit;
+        var outDir: vec3<f32> = vec3<f32>(0.0);
+        var resolved: bool     = false;
+        var tirDbgAnalyticMiss: bool = false;
+        let tirMaxB = u32(clamp(round(frame.diamondTirMaxBounces), 1.0, 32.0));
+        for (var bounce: u32 = 0u; bounce < tirMaxB; bounce = bounce + 1u) {
+          let bouncedR1 = reflect(curR1, curNBack);
+          let roNudge = clamp(
+            frame.diamondSize * TIR_BOUNCE_RO_NUDGE_SCALE,
+            TIR_BOUNCE_RO_NUDGE_FLOOR,
+            TIR_BOUNCE_RO_NUDGE_CEIL,
+          );
+          let roChain = curP + bouncedR1 * roNudge;
+          let exN     = diamondAnalyticExit(roChain, bouncedR1, analyticIdx);
+          if (dot(exN.nBack, exN.nBack) < 0.25) {
+            tirDbgAnalyticMiss = true;
+            break;
+          }
+          let trial    = refract(bouncedR1, exN.nBack, ior);
+          let trialDot = dot(trial, trial);
+          let trialNaN = trialDot != trialDot;
+          if (trialDot >= 1e-4 && !trialNaN) {
+            outDir   = trial;
+            resolved = true;
+            break;
+          }
+          curR1    = bouncedR1;
+          curNBack = exN.nBack;
+          curP     = exN.pWorld;
+        }
+        if (resolved) {
+          let uvOffB    = uv + (outDir - rd).xy * strength;
+          let uvCoverB  = coverUv(uvOffB);
+          let inBoundsB = all(uvCoverB >= vec2<f32>(0.0)) && all(uvCoverB <= vec2<f32>(1.0));
+          let refractPhoto = select(
+            bg,
+            textureSampleLevel(photoTex, photoSmp, uvCoverB, photoLod).rgb,
+            inBoundsB,
+          );
+          let refractEnv = sampleEnvmap(mix(rd, outDir, strength));
+          refractL = select(refractPhoto, refractEnv, frame.envmapEnabled > 0.5);
+        } else {
+          let exhaustedFallback = select(bg, reflSrc, frame.envmapEnabled > 0.5);
+          let dbgTir    = vec3<f32>(1.0, 0.2, 0.75);
+          let dbgAnMiss = vec3<f32>(1.0, 0.45, 0.05);
+          let dbgTint   = select(dbgTir, dbgAnMiss, tirDbgAnalyticMiss);
+          refractL = select(exhaustedFallback, dbgTint, frame.diamondTirDebug > 0.5);
+        }
+      } else {
+        refractL = reflSrc;
+      }
+    } else if (r2NaN || r2OOB) {
+      refractL = bg;
+    } else {
+      let refractPhoto = textureSampleLevel(photoTex, photoSmp, uvCover, photoLod).rgb;
+      let refractEnv   = sampleEnvmap(mix(rd, r2, strength));
+      refractL = select(refractPhoto, refractEnv, frame.envmapEnabled > 0.5);
+    }
+
+    let F_lambda = schlickFresnel(cosT, ior);
+    let L        = mix(refractL, reflSrc, F_lambda);
+    let lambdaRgb = max(xyzToSrgb(cieXyz(lambda)), vec3<f32>(0.0));
+    rgbAccum  = rgbAccum  + L * lambdaRgb;
+    rgbWeight = rgbWeight + lambdaRgb;
+  }
+
+  let raw     = rgbAccum / max(rgbWeight, vec3<f32>(1e-4));
+  let safe    = select(raw, bg, vec3<bool>(any(raw != raw)));
+  let clamped = clamp(safe, vec3<f32>(0.0), vec3<f32>(8.0));
+
+  let silhouetteGate = smoothstep(0.05, 0.15, frame.historyBlend);
+  let silhouetteMix  = mix(1.0, smoothstep(0.0, 0.05, cosT), silhouetteGate);
+  let outRgb         = mix(bg, clamped, silhouetteMix);
+
+  var historyUv = uv;
+  if (frame.taaEnabled > 0.5) {
+    historyUv = reprojectHit(hP, px, analyticIdx, 4, uv);
+  }
+  let prev  = textureSampleLevel(historyTex, historySmp, historyUv, 0.0).rgb;
+  var blend = adaptiveBlend(prev, outRgb);
+  if (frame.debugProxy > 0.5) {
+    blend = mix(blend, vec3<f32>(1.0, 0.3, 0.7), 0.2);
+  }
+
+  var display = blend;
+  if (frame.diamondFacetColor > 0.5) {
+    let pillCenter = frame.pills[analyticIdx].center;
+    display = sdfDiamondFacetColor(hP - pillCenter, frame.diamondSize);
+  }
+  if (frame.diamondWireframe > 0.5) {
+    let pillCenter = frame.pills[analyticIdx].center;
+    let edgeW      = sdfDiamondEdgeWeight(hP - pillCenter, frame.diamondSize);
     display = mix(display, vec3<f32>(1.0, 0.25, 0.25), edgeW * 0.85);
   }
 

@@ -157,14 +157,22 @@ fn reprojectHit(hitWorld: vec3<f32>, fragCoord: vec2<f32>, pillIdx: u32, shapeId
   return prevUv;
 }
 
+struct ProxyVsOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) @interpolate(flat) instanceIdx: u32,
+};
+
 @vertex
 fn vs_proxy(
   @builtin(vertex_index)   vi: u32,
   @builtin(instance_index) ii: u32,
-) -> @builtin(position) vec4<f32> {
+) -> ProxyVsOut {
+  var out: ProxyVsOut;
   if (ii >= u32(frame.pillCount)) {
     // Over pillCount → degenerate position so the triangle is clipped.
-    return vec4<f32>(2.0, 2.0, 0.5, 1.0);
+    out.pos = vec4<f32>(2.0, 2.0, 0.5, 1.0);
+    out.instanceIdx = 0u;
+    return out;
   }
   let pill    = frame.pills[ii];
   let shapeId = i32(frame.shape + 0.5);
@@ -180,7 +188,9 @@ fn vs_proxy(
   // DIAMOND_PROXY_VERT_COUNT the diamond branch has no valid vertex either.
   let maxVerts = select(CUBE_PROXY_VERT_COUNT, DIAMOND_PROXY_VERT_COUNT, shapeId == 4);
   if (vi >= maxVerts) {
-    return vec4<f32>(2.0, 2.0, 0.5, 1.0);
+    out.pos = vec4<f32>(2.0, 2.0, 0.5, 1.0);
+    out.instanceIdx = ii;
+    return out;
   }
 
   // Unit cube corner in [-1, 1]^3 → local AABB `±halfSize`. Matches the
@@ -215,5 +225,7 @@ fn vs_proxy(
       corner = transpose(frame.cubeRot) * corner;
     }
   }
-  return projectWorld(pill.center + corner);
+  out.pos = projectWorld(pill.center + corner);
+  out.instanceIdx = ii;
+  return out;
 }
