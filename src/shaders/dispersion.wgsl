@@ -2,6 +2,13 @@ const MAX_PILLS: u32 = 8u;
 const MAX_N:      i32 = 64;
 const HIT_EPS:    f32 = 0.25;  // hit tolerance (small — thin pills survive)
 const MIN_STEP:   f32 = 0.5;   // min march step (larger — loop doesn't stall on near-zero SDF)
+// Diamond TIR chain: nudge the bounce origin along the internal ray (pixel
+// space) so the start is unambiguously inside. Scales with `diamondSize`
+// but clamps: floor ~ DIAMOND_BOUNCE_EPS, ceil below neighbour-facet gaps
+// so we never replay the 0.5 px MIN_STEP overshoot failure mode.
+const TIR_BOUNCE_RO_NUDGE_SCALE: f32 = 0.0001;
+const TIR_BOUNCE_RO_NUDGE_FLOOR: f32 = 0.01;
+const TIR_BOUNCE_RO_NUDGE_CEIL:  f32 = 0.08;
 
 struct PillGpu {
   center:   vec3<f32>,
@@ -89,17 +96,23 @@ struct Frame {
   // `diamondFacetColor` toggles a flat-shaded debug fill where each facet
   // class gets a distinct colour — useful for checking adjacency + coverage
   // without refraction / dispersion confusing the signal.
-  // `diamondTirDebug` (1.0 = on): paint the TIR-exhausted bounce fallback
-  // HOT PINK so "where does the analytical exit run out of refract
-  // candidates after two internal bounces?" is visible at a glance.
-  // When off, the exhausted-chain path blends with silhouette `bg`
-  // (envmap disabled) or with envmap-at-front-reflection (envmap
-  // enabled) — see the "Three ways to fall back" branch in fs_main's
-  // wavelength loop.
-  diamondSize:        f32,
-  diamondWireframe:   f32,
-  diamondFacetColor:  f32,
-  diamondTirDebug:    f32,
+  // `diamondTirDebug` (1.0 = on): where the TIR-bounce path doesn't resolve,
+  // tint pixels — hot pink = chain used the full `diamondTirMaxBounces` budget
+  // but refract(s→air) still TIRs; orange = `diamondAnalyticExit` miss (zero
+  // or invalid nBack) so the failure isn't necessarily "need more bounces".
+  // When off, the exhausted path blends with silhouette `bg` (no envmap) or
+  // envmap-at-front-reflection; see the wavelength loop "exhausted" branch.
+  // `diamondTirMaxBounces`: cap on internal reflections in the
+  // diamond TIR-bounce loop (clamped 1..32 in fs_main; host default 6).
+  // Three trailing pads keep this sub-block 32 B for uniform alignment.
+  diamondSize:         f32,
+  diamondWireframe:    f32,
+  diamondFacetColor:   f32,
+  diamondTirDebug:     f32,
+  diamondTirMaxBounces: f32,
+  _diamondParamsPad0:  f32,
+  _diamondParamsPad1:  f32,
+  _diamondParamsPad2:  f32,
   // HDR environment map parameters (Phase C).
   // `envmapExposure`: linear-light multiplier on the sampled panorama.
   // Most HDRIs have peaks in the 100-1000 range; 0.25 keeps them
@@ -1054,8 +1067,8 @@ fn backExit(hitP: vec3<f32>, r1: vec3<f32>, shapeId: i32, pillIdx: u32, internal
   let roEntry = hitP + r1 * MIN_STEP;
   if (shapeId == 2) { return cubeAnalyticExit(roEntry, r1, pillIdx); }
   if (shapeId == 3) { return plateAnalyticExit(roEntry, r1, pillIdx); }
-  // Phase B: diamond uses an analytical polytope exit + 2-bounce TIR
-  // (wired in the wavelength loop below). The analytical normal eliminates
+  // Phase B: diamond uses an analytical polytope exit + short TIR chain (≤3
+  // bounces, wired in the wavelength loop below). The analytical normal eliminates
   // the finite-diff gradient degeneracy at facet edges that previously
   // sent TIR fallback to `reflSrc` and produced the "sudden face
   // appearing" tumble artifact.
@@ -1379,12 +1392,9 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
       // Phase B: for diamond, try a short chain of internal bounces before
       // falling back. Each iteration reflects the inside ray off the
       // current facet, analytically finds the NEXT facet, and tries to
-      // refract out. Two bounces is the sweet spot: the 1st bounce catches
-      // pavilion↔crown paths (bottom + side view sparkle), the 2nd catches
-      // pavilion↔pavilion↔crown paths (some top-view rays). A 3rd bounce
-      // measurably improves top-view coverage but the payoff vs per-pixel
-      // cost (one extra 57-plane analytical exit per wavelength) drops off
-      // fast. The Phase A fallback (`reflSrc`) substituted the front-face
+      // refract out. Deeper girdle / side views often need 4+ internal
+      // reflections; we cap the loop and accept perf trade-off. The Phase A
+      // fallback (`reflSrc`) substituted the front-face
       // external-reflection photo sample, which read as "other facets
       // suddenly appearing" when TIR pixels flickered across facet
       // boundaries during tumble — we're replacing that with the bounce
@@ -1403,21 +1413,25 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
         var curNBack = nBack;
         var curP     = pExit;
         var outDir: vec3<f32> = vec3<f32>(0.0);
-        var resolved: bool    = false;
-        // WGSL loop guard: 2 iterations = 1st + 2nd bounce. If both still
-        // TIR, we've hit a light path that needs ≥3 internal bounces to
-        // escape; the fallback below handles it.
-        for (var bounce: u32 = 0u; bounce < 2u; bounce = bounce + 1u) {
+        var resolved: bool     = false;
+        // True if we bailed on `diamondAnalyticExit` miss (not "ran out of bounces
+        // but refract still TIR") — TIR debug tints this orange vs pink.
+        var tirDbgAnalyticMiss: bool = false;
+        // Internal reflection budget (inspector: 1..32, default 6).
+        let tirMaxB = u32(clamp(round(frame.diamondTirMaxBounces), 1.0, 32.0));
+        for (var bounce: u32 = 0u; bounce < tirMaxB; bounce = bounce + 1u) {
           let bouncedR1 = reflect(curR1, curNBack);
-          // Use `curP` directly — no MIN_STEP bias. `diamondAnalyticExit`
-          // filters zero-length self-hits via its own DIAMOND_BOUNCE_EPS
-          // (0.01 px, ~25× tighter than the sphere-tracer HIT_EPS). A
-          // full MIN_STEP bias would overshoot nearby facets: e.g. an
-          // upper-half→girdle second bounce can resolve in under 0.1 px
-          // of ray travel, which the 0.5 px bias would jump clean past,
-          // putting `roBounce` outside the adjacent facet's half-space
-          // and picking a far wrong facet instead.
-          let exN = diamondAnalyticExit(curP, bouncedR1, analyticIdx);
+          let roNudge = clamp(
+            frame.diamondSize * TIR_BOUNCE_RO_NUDGE_SCALE,
+            TIR_BOUNCE_RO_NUDGE_FLOOR,
+            TIR_BOUNCE_RO_NUDGE_CEIL,
+          );
+          let roChain = curP + bouncedR1 * roNudge;
+          let exN     = diamondAnalyticExit(roChain, bouncedR1, analyticIdx);
+          if (dot(exN.nBack, exN.nBack) < 0.25) {
+            tirDbgAnalyticMiss = true;
+            break;
+          }
           let trial    = refract(bouncedR1, exN.nBack, ior);
           let trialDot = dot(trial, trial);
           // Self-compare catches NaN (WGSL's `<` against NaN is always
@@ -1455,23 +1469,18 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> FsOut {
           let refractEnv = sampleEnvmap(mix(rd, outDir, strength));
           refractL = select(refractPhoto, refractEnv, frame.envmapEnabled > 0.5);
         } else {
-          // Exhausted bounce chain. Three ways to fall back:
-          //   1. `diamondTirDebug` on → hot pink marker so the user sees
-          //      exactly where the chain still TIRs (drives the "do we
-          //      need a 3rd bounce?" investigation).
-          //   2. Envmap enabled → sample reflSrc, which at this point
-          //      is the envmap-at-front-reflection. The ray bounced
-          //      around and would eventually exit as external
-          //      reflection of the environment; reflSrc approximates
-          //      that without paying another analytical exit.
-          //   3. Neither → blend with silhouette (`bg`, the Phase B
-          //      no-envmap fallback).
+          // Exhausted: production uses bg or envmap `reflSrc`. TIR debug: pink =
+          // full bounce budget with refract(s→air) still TIR; orange = analytic
+          // exit miss (see `tirDbgAnalyticMiss` above).
           let exhaustedFallback = select(bg, reflSrc, frame.envmapEnabled > 0.5);
-          refractL = select(exhaustedFallback, vec3<f32>(1.0, 0.2, 0.75), frame.diamondTirDebug > 0.5);
+          let dbgTir    = vec3<f32>(1.0, 0.2, 0.75);
+          let dbgAnMiss = vec3<f32>(1.0, 0.45, 0.05);
+          let dbgTint   = select(dbgTir, dbgAnMiss, tirDbgAnalyticMiss);
+          refractL = select(exhaustedFallback, dbgTint, frame.diamondTirDebug > 0.5);
         }
       } else {
         // Non-diamond shapes (and diamond in approx mode) skip the
-        // 2-bounce analytical chain — the chain needs the per-facet
+        // short analytical chain — the chain needs the per-facet
         // normal that only the Phase B diamond analytical exit can
         // produce cheaply. Their TIR still benefits from the envmap
         // indirectly: `reflSrc` resolves to `sampleEnvmap(refl)` when

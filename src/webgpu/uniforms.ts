@@ -30,7 +30,9 @@ export type FrameParams = {
   readonly diamondSize:        number;  // diamond: girdle diameter (px). Ignored for other shapes.
   readonly diamondWireframe:   boolean; // diamond: overlay facet edges on top of the rendering for debugging.
   readonly diamondFacetColor:  boolean; // diamond: flat-shade each facet class with a distinct debug colour.
-  readonly diamondTirDebug:    boolean; // diamond: paint hot pink where the 2-bounce TIR chain exhausts (vs the production fallback — bg when envmap off, envmap-at-front-reflection when envmap on).
+  readonly diamondTirDebug:    boolean; // diamond: diagnostic tints for unresolved TIR path — hot pink = bounce budget exhausted with refract still TIR; orange = diamondAnalyticExit miss (see dispersion.wgsl).
+  /** Diamond TIR path: max internal bounces (1..32, GPU-clamped). */
+  readonly diamondTirMaxBounces: number;
   readonly diamondView:        DiamondView; // diamond: 'free' tumbles, fixed views pin for reference-checking.
   readonly envmapEnabled:      boolean; // Phase C: use HDR panorama for reflection / TIR (false = Phase A reflSrc hack).
   readonly envmapExposure:     number;  // linear-light multiplier on envmap samples. Typical 0.05–1.0 depending on HDRI peak.
@@ -51,9 +53,9 @@ export type FrameParams = {
 //   offset 272: diamondRot     mat3x3<f32>                        (48 B)
 //   offset 320: diamondRotPrev mat3x3<f32>                        (48 B)
 //   offset 368: waveAmp, waveFreq, waveLipFactor, sceneTime       (16 B)
-//   offset 384: diamondSize + 3 diamond bool-flags                (16 B)
-//   offset 400: envmapExposure, envmapRotation, envmapEnabled, pad (16 B)
-//   offset 416: pills[0..MAX_PILLS] — each pill is vec3 + f32 + vec3 + f32 (32 B)
+//   offset 384: diamondSize + 3 diamond bool-flags + tirMaxBounces + 3 pad  (32 B)
+//   offset 416: envmapExposure, envmapRotation, envmapEnabled, pad (16 B)
+//   offset 432: pills[0..MAX_PILLS] — each pill is vec3 + f32 + vec3 + f32 (32 B)
 const HEAD_FLOATS              = 20;                                // 80 B
 const CUBE_ROT_FLOATS          = 12;                                // 48 B (3 padded cols)
 const CUBE_ROT_PREV_FLOATS     = 12;                                // 48 B (prev-frame cube for reprojection)
@@ -62,7 +64,7 @@ const PLATE_ROT_PREV_FLOATS    = 12;                                // 48 B (pre
 const DIAMOND_ROT_FLOATS       = 12;                                // 48 B
 const DIAMOND_ROT_PREV_FLOATS  = 12;                                // 48 B (prev-frame diamond for reprojection)
 const PLATE_PARAMS_FLOATS      = 4;                                 // 16 B (3 used + 1 pad)
-const DIAMOND_PARAMS_FLOATS    = 4;                                 // 16 B (size + 3 bool-flags)
+const DIAMOND_PARAMS_FLOATS    = 8;                                 // 32 B (size + 3 bool-flags + tir max + 3× pad)
 const ENVMAP_PARAMS_FLOATS     = 4;                                 // 16 B (exposure + rotation + enabled + pad)
 const PILL_FLOATS              = 8;                                 // 32 B per pill
 const TOTAL_FLOATS    = HEAD_FLOATS
@@ -75,7 +77,7 @@ const TOTAL_BYTES     = TOTAL_FLOATS * 4;
 
 // Reused across frames so we don't allocate a fresh Float32Array every tick.
 // Total size grows with the field set — see TOTAL_BYTES above (currently 672 B
-// after Phase C added the envmap 16-B params block).
+// after the diamond block expanded to 32 B for diamondTirMaxBounces + pad).
 const scratch = new Float32Array(TOTAL_FLOATS);
 
 export function createFrameBuffer(device: GPUDevice): GPUBuffer {
@@ -160,16 +162,19 @@ export function writeFrame(device: GPUDevice, buf: GPUBuffer, p: FrameParams): v
   scratch[plateParamsBase + 2] = 1 / Math.sqrt(1 + ampFreq * ampFreq);
   scratch[plateParamsBase + 3] = p.sceneTime;
 
-  // Diamond params: girdle diameter + 3 debug flags (wireframe,
-  // facetColor, tirDebug). The surrounding 16-B block keeps the
-  // envmap block (and pills array after it) at their natural 16-byte
-  // alignment so WGSL's array-of-struct layout rules hold without
-  // per-element padding.
+  // Diamond params: girdle diameter + 3 debug flags + TIR max bounces; three
+  // padding floats zero-filled so the sub-block is 32 B and the envmap group
+  // stays 16 B aligned.
   const diamondParamsBase = plateParamsBase + PLATE_PARAMS_FLOATS;
   scratch[diamondParamsBase + 0] = p.diamondSize;
   scratch[diamondParamsBase + 1] = p.diamondWireframe  ? 1 : 0;
   scratch[diamondParamsBase + 2] = p.diamondFacetColor ? 1 : 0;
   scratch[diamondParamsBase + 3] = p.diamondTirDebug   ? 1 : 0;
+  scratch[diamondParamsBase + 4] = Math.min(
+    32,
+    Math.max(1, Math.round(p.diamondTirMaxBounces)),
+  );
+  // +5, +6, +7 remain zero (scratch.fill(0))
 
   // Envmap params. `envmapEnabled` is a boolean-as-f32 so the shader's
   // `frame.envmapEnabled > 0.5` guard matches the other diamond debug

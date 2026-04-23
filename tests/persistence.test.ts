@@ -58,6 +58,7 @@ function defaultParamsForSave(): Params {
     diamondWireframe: false,
     diamondFacetColor: false,
     diamondTirDebug: false,
+    diamondTirMaxBounces: 6,
     diamondView: 'free',
     envmapEnabled: true,
     envmapExposure: 0.25,

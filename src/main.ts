@@ -483,6 +483,7 @@ async function main(): Promise<void> {
         diamondWireframe:   params.diamondWireframe,
         diamondFacetColor:  params.diamondFacetColor,
         diamondTirDebug:    params.diamondTirDebug,
+        diamondTirMaxBounces: params.diamondTirMaxBounces,
         diamondView:        params.diamondView,
         // Envmap controls forward to the shader as-is; slug itself is
         // not a uniform (the texture IS the envmap — slug lives in UI

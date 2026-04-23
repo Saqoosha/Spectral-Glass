@@ -22,6 +22,10 @@ export type { DiamondView } from './math/diamond';
 // slider range the UI uses, without importing diamond.ts in two places.
 export { DIAMOND_SIZE_MIN, DIAMOND_SIZE_MAX };
 
+/** Diamond TIR-bounce loop cap (inspector + GPU `clamp(…,1,32)`). */
+export const DIAMOND_TIR_BOUNCES_MIN = 1;
+export const DIAMOND_TIR_BOUNCES_MAX = 32;
+
 /** Perspective FOV slider / persistence bounds, in degrees.
  *  Anything outside the range drives `cameraZ = (height/2) / tan(fov/2)` into
  *  ±Infinity / 0, which blows up the projection math. */
@@ -122,14 +126,13 @@ export type Params = {
   // so per-facet adjacency + coverage are visible without refraction
   // muddying the signal. Typically paired with refractionStrength=0.
   diamondFacetColor: boolean;
-  // Diamond-only TIR-chain debug. When true, the wavelength-loop's
-  // bounce-chain-exhausted fallback paints HOT PINK instead of blending
-  // into the silhouette (`bg`). Reveals which pixels needed more than
-  // 2 internal bounces to escape. Expected pattern: top view saturated
-  // (Tolkowsky cut traps axial light), bottom view mostly clean (one
-  // bounce suffices), side + tumble scattered. Leave off for production
-  // rendering.
+  // Diamond-only TIR-chain debug. Pixels that don't resolve: hot pink =
+  // bounce budget used up, refract out still TIR; orange = analytical exit
+  // miss (see dispersion.wgsl). Leave off for production.
   diamondTirDebug: boolean;
+  // Diamond-only: max internal reflections in the TIR-bounce path (exact
+  // refraction). Higher = fewer hot-pink exhaust pixels, more per-pixel work.
+  diamondTirMaxBounces: number;
   // Diamond-only rotation preset. 'free' tumbles with the spin animation;
   // fixed views pin to a canonical pose for cross-checking facet geometry
   // against a reference (top = table toward camera, side = girdle profile,
@@ -368,12 +371,17 @@ export function initUi(
   const diamondFacetColorBinding = shape.addBinding(params, 'diamondFacetColor', {
     label: 'Facet color',
   });
-  // Diamond-only: TIR-chain diagnostic. ON paints hot pink where the
-  // 2-bounce chain runs out of refract candidates. Useful for eyeballing
-  // "does a 3rd bounce buy much coverage?" before committing to the extra
-  // cost. Leave OFF for the production rendering path.
+  // Diamond-only: diagnostic tints (pink = still TIR after max bounces; orange =
+  // analytic exit miss). Leave OFF for production.
   const diamondTirDebugBinding = shape.addBinding(params, 'diamondTirDebug', {
     label: 'TIR debug',
+  });
+  // Higher values cost more (per-λ × bounces × analytic exit) on TIR pixels.
+  const diamondTirMaxBouncesBinding = shape.addBinding(params, 'diamondTirMaxBounces', {
+    min: DIAMOND_TIR_BOUNCES_MIN,
+    max: DIAMOND_TIR_BOUNCES_MAX,
+    step: 1,
+    label: 'TIR max bounces (costly ↑)',
   });
   // Diamond-only: canonical view presets. 'Free' keeps the tumble; the
   // three fixed poses pin the shape so facet geometry can be compared
@@ -414,8 +422,9 @@ export function initUi(
     diamondSizeBinding.hidden       = !isDiamond;
     diamondWireframeBinding.hidden  = !isDiamond;
     diamondFacetColorBinding.hidden = !isDiamond;
-    diamondTirDebugBinding.hidden   = !isDiamond;
-    diamondViewBinding.hidden       = !isDiamond;
+    diamondTirDebugBinding.hidden         = !isDiamond;
+    diamondTirMaxBouncesBinding.hidden    = !isDiamond;
+    diamondViewBinding.hidden             = !isDiamond;
     if (isCube) {
       // Average the three dims to seed Size — covers the case where shape
       // was just switched from pill/prism with non-equal extents.
@@ -641,6 +650,7 @@ export function defaultParams(): Params {
     diamondWireframe: false,
     diamondFacetColor: false,
     diamondTirDebug: false,
+    diamondTirMaxBounces: 6,
     diamondView: 'free',
     envmapEnabled: true,
     // Exposure = 0.25 keeps typical HDRI peaks (studio strip-lights at

@@ -14,15 +14,13 @@ import {
 const DIAMOND_ROT_FLOAT_OFFSET      = 20 + 12 + 12 + 12 + 12;   // HEAD + cubeRot + cubeRotPrev + plateRot + plateRotPrev
 const DIAMOND_ROT_PREV_FLOAT_OFFSET = DIAMOND_ROT_FLOAT_OFFSET + 12;
 const DIAMOND_ROT_FLOATS            = 12;
-// Diamond params block: 4 floats (diamondSize + wireframe + facetColor +
-// tirDebug), starting right after the plate params block (which itself
-// follows both diamond rotation blocks).
+// Diamond params block: 8 floats (diamondSize + 3 bool-flags + tir max + 3 pad).
 const DIAMOND_PARAMS_FLOAT_OFFSET    = DIAMOND_ROT_PREV_FLOAT_OFFSET + 12 + 4; // + plateParams(4)
 // Envmap params block follows immediately after diamond params: 4 floats
 // (exposure, rotation, enabled, pad). Kept on a pixel of its own in tests
 // so the Phase C slot packing doesn't silently shift under a future
 // uniform reshuffle.
-const ENVMAP_PARAMS_FLOAT_OFFSET     = DIAMOND_PARAMS_FLOAT_OFFSET + 4;
+const ENVMAP_PARAMS_FLOAT_OFFSET     = DIAMOND_PARAMS_FLOAT_OFFSET + 8;
 
 // Minimal device + buffer mocks. writeFrame calls queue.writeBuffer exactly
 // once per invocation; we capture the source Float32Array and the offset
@@ -74,6 +72,7 @@ function baseParams(overrides: Partial<FrameParams>): FrameParams {
     diamondWireframe:   false,
     diamondFacetColor:  false,
     diamondTirDebug:    false,
+    diamondTirMaxBounces: 6,
     diamondView:        'free',
     envmapEnabled:      false,
     envmapExposure:     0.25,
@@ -156,8 +155,8 @@ describe('writeFrame — diamond rotation slot selection', () => {
   }
 
   it('writes diamond debug-boolean flags into the correct slots of the params block', () => {
-    // The diamond params block is 4 floats:
-    //   [diamondSize, diamondWireframe, diamondFacetColor, diamondTirDebug]
+    // The diamond params block is 8 floats; slots 1–3 are booleans:
+    //   [diamondSize, diamondWireframe, diamondFacetColor, diamondTirDebug, tirMax, pad×3]
     // Toggling each boolean must flip exactly ONE slot (not leak into a
     // neighbour). Catches the "slot 2 vs slot 3 swap" regression that
     // would silently re-route the TIR-debug toggle onto the facet-color
@@ -193,6 +192,15 @@ describe('writeFrame — diamond rotation slot selection', () => {
     expect(scratch[DIAMOND_PARAMS_FLOAT_OFFSET + 1]).toBe(0);
     expect(scratch[DIAMOND_PARAMS_FLOAT_OFFSET + 2]).toBe(0);
     expect(scratch[DIAMOND_PARAMS_FLOAT_OFFSET + 3]).toBe(0);
+  });
+
+  it('writes diamondTirMaxBounces into slot 4 (rounded and clamped 1..32)', () => {
+    const { device, writes: w1 } = mockDevice();
+    writeFrame(device, {} as GPUBuffer, baseParams({ diamondTirMaxBounces: 12.7 }));
+    expect(w1[0]!.src[DIAMOND_PARAMS_FLOAT_OFFSET + 4]).toBe(13);
+    const { device: d2, writes: w2 } = mockDevice();
+    writeFrame(d2, {} as GPUBuffer, baseParams({ diamondTirMaxBounces: 0 }));
+    expect(w2[0]!.src[DIAMOND_PARAMS_FLOAT_OFFSET + 4]).toBe(1);
   });
 
   it('writes envmap params into the correct slots (exposure/rotation/enabled)', () => {

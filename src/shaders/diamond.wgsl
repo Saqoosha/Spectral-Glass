@@ -519,6 +519,14 @@ fn diamondAnalyticExit(roWorld: vec3<f32>, rdWorld: vec3<f32>, pillIdx: u32) -> 
     }
   }
 
+  // Miss every facet (e.g. ro on a bad boundary, parallel/degenerate rd).
+  // Do NOT build pL with bestT still at the sentinels: would poison the TIR
+  // chain with an enormous `pWorld` and a bogus nBack. Zero `nBack` makes
+  // `refract` fail; callers must not advance `curP` from a miss.
+  if (dot(bestN, bestN) < 0.5) {
+    return CubeExit(roWorld, vec3<f32>(0.0, 0.0, 0.0));
+  }
+
   // Local exit point, then local → world (inverse rotation = transpose).
   let pL     = roL + rdL * bestT;
   let rotT   = transpose(frame.diamondRot);

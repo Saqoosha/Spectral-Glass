@@ -1,5 +1,6 @@
 import {
   DIAMOND_SIZE_MAX, DIAMOND_SIZE_MIN,
+  DIAMOND_TIR_BOUNCES_MAX, DIAMOND_TIR_BOUNCES_MIN,
   EDGE_R_MAX, EDGE_R_MIN, FOV_MAX, FOV_MIN,
   ENVMAP_EXPOSURE_MAX, ENVMAP_EXPOSURE_MIN,
   ENVMAP_ROTATION_MAX, ENVMAP_ROTATION_MIN,
@@ -99,6 +100,11 @@ function validateParams(u: unknown): Partial<Params> {
   if (typeof p.diamondWireframe === 'boolean')  out.diamondWireframe  = p.diamondWireframe;
   if (typeof p.diamondFacetColor === 'boolean') out.diamondFacetColor = p.diamondFacetColor;
   if (typeof p.diamondTirDebug === 'boolean')   out.diamondTirDebug   = p.diamondTirDebug;
+  if (isFiniteNumber(p.diamondTirMaxBounces)) {
+    out.diamondTirMaxBounces = Math.round(
+      clamp(p.diamondTirMaxBounces, DIAMOND_TIR_BOUNCES_MIN, DIAMOND_TIR_BOUNCES_MAX),
+    );
+  }
   if (typeof p.diamondView === 'string' && DIAMOND_VIEWS.has(p.diamondView as DiamondView)) {
     out.diamondView = p.diamondView as DiamondView;
   }
