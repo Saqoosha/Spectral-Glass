@@ -56,8 +56,10 @@ const SHAPE_MATERIAL_KEYS = ['pill', 'prism', 'cube', 'plate', 'diamond'] as con
 
 /**
  * Pre–shared-material `shapes.*` stored n_d / V_d / refraction on each
- * sub-object. If the root payload has no new keys, read the first
- * per-shape value we find so old saves keep their numbers after upgrade.
+ * sub-object. If the root payload has no new keys, fill from nested shapes
+ * in `SHAPE_MATERIAL_KEYS` order (pill → … → diamond): **first** shape that
+ * has a value wins for each field. Hand-edited per-shape-only materials
+ * collapse to a single global triple (same as a normal merge into defaults).
  */
 function materialFallbackFromNestedShapes(
   shapes: unknown,

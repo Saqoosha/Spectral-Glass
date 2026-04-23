@@ -62,16 +62,18 @@ Requires a WebGPU-capable browser (Chrome / Edge 120+, Safari 18+).
 | Drag a shape | Move it around the canvas (cube / diamond use a circular hit radius) |
 | **`Z`** (hold) | Force `N = 3` (fake RGB dispersion) for A/B comparison |
 | **Space** | Shuffle pills to random positions |
-| **`R`** | Reload a new random Picsum photo |
+| **`R`** | Reload a new random Picsum photo (same as **Reload photo**; only when **HDR env** is off) |
 | **`T` / `S` / `B` / `F`** | Diamond view presets — **T**op (table toward camera) / **S**ide (girdle profile) / **B**ottom (culet toward camera) / **F**ree (tumble). No-op for other shapes. |
-| Tweakpane | IOR, Abbe, sample count, shape (pill / prism / cube / plate / diamond), dimensions, wave amp + wavelength (plate only), **diamond size** + view preset + **Wireframe** / **Facet color** + **TIR debug** (pink = bounce budget exhausted with refract still TIR; orange = analytic exit miss) + **TIR max bounces** 1…32 (default 6, higher = more work on TIR pixels) (diamond only), refraction strength, projection (ortho / perspective), FOV, temporal jitter, refraction mode, **Stop the world** (freeze rotation/wave while AA keeps converging), **AA** mode selector — `None` / `FXAA` (single-frame spatial filter) / `TAA` (sub-pixel jitter + motion-vector history reprojection), **Environment** panel — HDR panorama picker (curated Poly Haven HDRIs spanning studio / indoor / outdoor / sunset / night categories, selectable at 1K / 2K / 4K resolution — 2K default), exposure + rotation sliders, Random panorama button, Enabled toggle to A/B with the legacy reflSrc hack |
+| Tweakpane | IOR, Abbe, sample count, shape (pill / prism / cube / plate / diamond), dimensions, wave amp + wavelength (plate only), **diamond size** + view preset + **Wireframe** / **Facet color** + **TIR debug** (pink = bounce budget exhausted with refract still TIR; orange = analytic exit miss) + **TIR max bounces** 1…32 (default 6, higher = more work on TIR pixels) (diamond only), refraction strength, projection (ortho / perspective), FOV, temporal jitter, refraction mode, **Stop the world** (freeze rotation/wave while AA keeps converging), **AA** mode selector — `None` / `FXAA` (single-frame spatial filter) / `TAA` (sub-pixel jitter + motion-vector history reprojection), **Environment** — **HDR env** on: Poly Haven panorama (1K/2K/4K) + exposure + rotation + random; **off**: those hidden + **Reload photo** (Picsum background; legacy reflSrc path for reflections) |
 | Presets | Subtle pill · Strong dispersion · Prism rainbow · Rotating cube · Wavy plate |
 | Materials | 10 real-world glasses (water → BK7 → SF flints → diamond → moissanite) + 4 fantasy (n_d up to 3.5, V_d down to 2) |
 
 The **Perf** panel shows **GPU ms** by default when the browser exposes WebGPU
-`timestamp-query`. Add `?perf=1` (or `?perf`) to also log samples on
-`window._perf` for benchmarks. Check **Show proxy** in the UI to tint
-every proxy fragment pink and see the rasterised silhouette.
+`timestamp-query` (if the adapter does not, the GPU line stays empty — that is
+expected). Add `?perf=1` (or `?perf`) to also log samples on
+`window._perf` for benchmarks, **only in builds where timestamp queries are
+available**; otherwise the logging hook is not installed. Check **Show proxy**
+in the UI to tint every proxy fragment pink and see the rasterised silhouette.
 
 ## Technical approach
 

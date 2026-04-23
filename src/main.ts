@@ -277,7 +277,9 @@ async function main(): Promise<void> {
       markSceneChanged();
       persist();
     }
-    if (k === 'r') { void reloadPhoto(); /* already markSceneChanged'd on success */ }
+    if (k === 'r' && !params.envmapEnabled) {
+      void reloadPhoto(); /* markSceneChanged on success — same as Reload photo (hidden when HDR env on) */
+    }
     // Diamond view presets — snap to canonical poses for facet geometry
     // checking. T/S/B/F mirror the Tweakpane dropdown so either path works.
     // Only active when the diamond shape is selected (the param exists

@@ -138,9 +138,9 @@ export type Params = {
   envmapSize: EnvmapSize;
 };
 
-// Object-style options are reordered by Tweakpane (string coerced values
-// sort as '16'<'3'<'32'…). Array-style { text, value }[] keeps declaration order
-// (see @tweakpane/core ListParamsOptions / ArrayStyleListOptions).
+// Object-style `options` are reordered by Tweakpane (often by `String(value)` or
+// label sort). Array-style `{ text, value }[]` keeps declaration order
+// (see @tweakpane/core `ListParamsOptions` / `ArrayStyleListOptions`).
 const SAMPLE_COUNT_PANE_OPTIONS: { text: string; value: Params['sampleCount'] }[] = [
   { text: '3 (fake RGB)', value: 3 },
   { text: '8 (default)', value: 8 },
@@ -148,6 +148,40 @@ const SAMPLE_COUNT_PANE_OPTIONS: { text: string; value: Params['sampleCount'] }[
   { text: '32', value: 32 },
   { text: '64 (max)', value: 64 },
 ];
+const REFRACTION_MODE_PANE_OPTIONS: { text: string; value: Params['refractionMode'] }[] = [
+  { text: 'Exact', value: 'exact' },
+  { text: 'Approx', value: 'approx' },
+];
+const SHAPE_PANE_OPTIONS: { text: string; value: Params['shape'] }[] = [
+  { text: 'Pill', value: 'pill' },
+  { text: 'Prism (rainbow)', value: 'prism' },
+  { text: 'Cube (rotating)', value: 'cube' },
+  { text: 'Plate (wavy)', value: 'plate' },
+  { text: 'Diamond (brilliant)', value: 'diamond' },
+];
+const DIAMOND_VIEW_PANE_OPTIONS: { text: string; value: DiamondView }[] = [
+  { text: 'Free (tumble)', value: 'free' },
+  { text: 'Top (table)', value: 'top' },
+  { text: 'Side (girdle)', value: 'side' },
+  { text: 'Bottom (culet)', value: 'bottom' },
+];
+const PROJECTION_PANE_OPTIONS: { text: string; value: Params['projection'] }[] = [
+  { text: 'Orthographic', value: 'ortho' },
+  { text: 'Perspective', value: 'perspective' },
+];
+const AA_MODE_PANE_OPTIONS: { text: string; value: AaMode }[] = [
+  { text: 'None', value: 'none' },
+  { text: 'FXAA', value: 'fxaa' },
+  { text: 'TAA', value: 'taa' },
+];
+const ENVMAP_SLUG_PANE_OPTIONS: { text: string; value: string }[] = ENVMAPS.map((e) => ({
+  text: `${e.label} (${e.kind})`,
+  value: e.slug,
+}));
+const ENVMAP_SIZE_PANE_OPTIONS: { text: string; value: EnvmapSize }[] = ENVMAP_SIZES.map((s) => ({
+  text: s.toUpperCase(),
+  value: s,
+}));
 
 type Preset = {
   label: string;
@@ -295,20 +329,12 @@ export function initUi(
     // Approx: one back-face trace shared across all wavelengths (jittered each
     // frame). On this engine it's texture-bandwidth bound, so the speedup vs
     // Exact is modest (~15% at N=32) and dynamic scenes show more variance.
-    options: { Exact: 'exact', Approx: 'approx' },
+    options: REFRACTION_MODE_PANE_OPTIONS,
   });
   spectral.addBinding(params, 'temporalJitter', { label: 'Temporal jitter' });
 
   const shape = pane.addFolder({ title: 'Shape' });
-  const shapeBinding = shape.addBinding(params, 'shape', {
-    options: {
-      Pill:                  'pill',
-      'Prism (rainbow)':     'prism',
-      'Cube (rotating)':     'cube',
-      'Plate (wavy)':        'plate',
-      'Diamond (brilliant)': 'diamond',
-    },
-  });
+  const shapeBinding = shape.addBinding(params, 'shape', { options: SHAPE_PANE_OPTIONS });
 
   // One inspector subfolder per object type — only the active shape’s folder
   // is visible so each mode gets a dedicated control surface.
@@ -352,12 +378,7 @@ export function initUi(
   });
   inspDiamond.addBinding(params.shapes.diamond, 'diamondView', {
     label: 'View',
-    options: {
-      'Free (tumble)': 'free',
-      'Top (table)':   'top',
-      'Side (girdle)': 'side',
-      'Bottom (culet)': 'bottom',
-    },
+    options: DIAMOND_VIEW_PANE_OPTIONS,
   });
   inspDiamond.addBinding(params.shapes.diamond, 'diamondWireframe',  { label: 'Wireframe' });
   inspDiamond.addBinding(params.shapes.diamond, 'diamondFacetColor', { label: 'Facet color' });
@@ -400,18 +421,15 @@ export function initUi(
   // the reflection-source swap + HDRI picker aren't buried in the
   // existing Misc wagon wheel.
   const env = pane.addFolder({ title: 'Environment' });
-  const envmapEnabledBinding = env.addBinding(params, 'envmapEnabled', { label: 'Enabled' });
+  const envmapEnabledBinding = env.addBinding(params, 'envmapEnabled', { label: 'HDR env' });
   // Lazy-fetch the HDRI when envmap flips from false → true. Boots
   // with envmapEnabled=false skip the initial download (main.ts
   // optimisation) — this handler kicks off the fetch on opt-in so
   // the user doesn't have to click a separate button to get the
   // panorama they configured.
-  envmapEnabledBinding.on('change', (ev) => {
-    if (ev.value) onEnvmapEnabled();
-  });
   const envmapSlugBinding = env.addBinding(params, 'envmapSlug', {
     label: 'Panorama',
-    options: Object.fromEntries(ENVMAPS.map(e => [`${e.label} (${e.kind})`, e.slug])),
+    options: ENVMAP_SLUG_PANE_OPTIONS,
   });
   envmapSlugBinding.on('change', (ev) => { reloadEnvmap(ev.value); });
   // Size selector: trade download latency for highlight sharpness.
@@ -419,13 +437,14 @@ export function initUi(
   // without making the random-panorama button feel sluggish.
   const envmapSizeBinding = env.addBinding(params, 'envmapSize', {
     label: 'Size',
-    options: Object.fromEntries(ENVMAP_SIZES.map(s => [s.toUpperCase(), s])),
+    options: ENVMAP_SIZE_PANE_OPTIONS,
   });
   // Changing size forces a re-fetch of the current slug at the new
   // resolution — envmap textures are immutable, so swap the whole
   // thing rather than try to up/down-sample in-place.
   envmapSizeBinding.on('change', () => { reloadEnvmap(params.envmapSlug); });
-  env.addButton({ title: 'Random panorama' }).on('click', () => { randomEnvmap(); });
+  const randomPanoramaBtn = env.addButton({ title: 'Random panorama' });
+  randomPanoramaBtn.on('click', () => { randomEnvmap(); });
   const envmapExposureBinding = env.addBinding(params, 'envmapExposure', {
     min: ENVMAP_EXPOSURE_MIN, max: ENVMAP_EXPOSURE_MAX, step: 0.01, label: 'Exposure',
   });
@@ -436,21 +455,26 @@ export function initUi(
     // writeFrame into `frame.envmapRotation`.
     min: ENVMAP_ROTATION_MIN, max: ENVMAP_ROTATION_MAX, step: Math.PI / 180, label: 'Rotation (rad)',
   });
+  const reloadPhotoBtn = env.addButton({ title: 'Reload photo' });
+  reloadPhotoBtn.on('click', reloadPhoto);
+
+  function syncEnvHdrControls(): void {
+    const on = params.envmapEnabled;
+    envmapSlugBinding.hidden   = !on;
+    envmapSizeBinding.hidden  = !on;
+    randomPanoramaBtn.hidden  = !on;
+    envmapExposureBinding.hidden = !on;
+    envmapRotationBinding.hidden  = !on;
+    // Background photo reload (Picsum) — only relevant when not using HDR for reflections.
+    reloadPhotoBtn.hidden = on;
+  }
+  syncEnvHdrControls();
 
   const misc = pane.addFolder({ title: 'Misc' });
-  misc.addBinding(params, 'projection', {
-    options: { Orthographic: 'ortho', Perspective: 'perspective' },
-  });
+  misc.addBinding(params, 'projection', { options: PROJECTION_PANE_OPTIONS });
   misc.addBinding(params, 'fov', { min: FOV_MIN, max: FOV_MAX, step: 1, label: 'FOV°' });
   misc.addBinding(params, 'paused', { label: 'Stop the world' });
-  misc.addBinding(params, 'aaMode', {
-    label: 'AA',
-    options: {
-      None: 'none',
-      FXAA: 'fxaa',
-      TAA:  'taa',
-    },
-  });
+  misc.addBinding(params, 'aaMode', { label: 'AA', options: AA_MODE_PANE_OPTIONS });
   // History blend weight controls the steady-state EMA. Higher = sharper
   // motion (less ghost) but noisier. The shader auto-adapts toward 1.0
   // when it detects color jumps (variance clamp), so for fast motion the
@@ -475,8 +499,6 @@ export function initUi(
       onChange();
     });
   }
-  const reload = presets.addButton({ title: 'Reload photo' });
-  reload.on('click', reloadPhoto);
 
   // Materials only change n_d + V_d — refraction strength and per-shape
   // sizes stay as-is.
@@ -592,7 +614,12 @@ export function initUi(
   // that's a folder-level aggregation), so we always want both
   // markSceneChanged + onChange, no `last` gating needed.
   const onBindingChange = () => { markSceneChanged(); onChange(); };
-  envmapEnabledBinding.on('change',  onBindingChange);
+  envmapEnabledBinding.on('change', (ev) => {
+    if (ev.value) onEnvmapEnabled();
+    syncEnvHdrControls();
+    pane.refresh();
+    onBindingChange();
+  });
   envmapExposureBinding.on('change', onBindingChange);
   envmapRotationBinding.on('change', onBindingChange);
 

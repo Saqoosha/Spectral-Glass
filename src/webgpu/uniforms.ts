@@ -30,7 +30,7 @@ export type FrameParams = {
   readonly diamondSize:        number;  // diamond: girdle diameter (px). Ignored for other shapes.
   readonly diamondWireframe:   boolean; // diamond: overlay facet edges on top of the rendering for debugging.
   readonly diamondFacetColor:  boolean; // diamond: flat-shade each facet class with a distinct debug colour.
-  readonly diamondTirDebug:    boolean; // diamond: diagnostic tints for unresolved TIR path — hot pink = bounce budget exhausted with refract still TIR; orange = diamondAnalyticExit miss (see dispersion.wgsl).
+  readonly diamondTirDebug:    boolean; // diamond: diagnostic tints for unresolved TIR path — hot pink = bounce budget exhausted with refract still TIR; orange = diamondAnalyticExit miss (see `dispersion/fragment.wgsl` / `trace.wgsl`).
   /** Diamond TIR path: max internal bounces (1..32, GPU-clamped). */
   readonly diamondTirMaxBounces: number;
   readonly diamondView:        DiamondView; // diamond: 'free' tumbles, fixed views pin for reference-checking.
@@ -118,7 +118,7 @@ export function writeFrame(device: GPUDevice, buf: GPUBuffer, p: FrameParams): v
   // paused, see main.ts) so "Stop the world" stops spin even though the noise
   // time (`p.time` above) keeps advancing for TAA convergence. Prev-frame
   // matrices feed the TAA reprojection path — see reprojectHit in
-  // src/shaders/dispersion.wgsl.
+  // `src/shaders/dispersion/fragment.wgsl`.
   let base = HEAD_FLOATS;
   scratch.set(cubeRotationColumns(p.sceneTime),        base); base += CUBE_ROT_FLOATS;
   scratch.set(cubeRotationColumns(p.prevSceneTime),    base); base += CUBE_ROT_PREV_FLOATS;
