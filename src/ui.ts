@@ -111,6 +111,7 @@ export type Params = {
   projection: 'ortho' | 'perspective';
   fov: number;  // full vertical field-of-view in degrees
   debugProxy: boolean;  // tint proxy fragments pink
+  smoothCurvature: boolean;  // pill/cube: true = L4 squircle rim, false = legacy circular rim
   aaMode: AaMode;
   paused: boolean;  // "Stop the world" — freeze rotation/wave while keeping AA converging
   historyAlpha: number;  // steady-state EMA blend weight (0..1). Lower = more motion blur, less noise; higher = sharper but noisier.
@@ -333,6 +334,7 @@ export function initUi(
 
   const shape = pane.addFolder({ title: 'Shape' });
   const shapeBinding = shape.addBinding(params, 'shape', { options: SHAPE_PANE_OPTIONS });
+  shape.addBinding(params, 'smoothCurvature', { label: 'Smooth curvature' });
 
   // One inspector subfolder per object type — only the active shape’s folder
   // is visible so each mode gets a dedicated control surface.
@@ -669,6 +671,7 @@ export function defaultParams(): Params {
     projection: 'perspective',
     fov: 60,
     debugProxy: false,
+    smoothCurvature: true,
     aaMode: 'taa',
     paused: false,
     historyAlpha: 0.2,

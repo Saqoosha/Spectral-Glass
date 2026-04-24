@@ -2,15 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Spectral Glass</title>
     <style>
-      html, body { margin: 0; padding: 0; background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      html, body {
+        margin: 0; padding: 0; background: #000; color: #fff;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        height: 100%;
+        overflow: hidden;
+        overscroll-behavior: none;
+      }
       #gpu {
         display: block;
         position: relative;
         width: 100vw;
         height: 100vh;
+        /* iOS Safari: block page scroll/pinch so vertical pointer drags reach attachDrag(). */
+        touch-action: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
       }
       #html-bg-root {
         position: absolute;

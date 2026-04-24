@@ -10,19 +10,15 @@ tumbling wavy plates, and round brilliant cut diamonds. Unlike the common
 per-wavelength and reconstructs the final color via CIE 1931 color matching
 functions.
 
-![Cubes over rooftops](docs/images/demo-default.png)
+![Four glass cubes refracting the README page on a grayscale photo](docs/images/demo-default.png)
 
-Above: four rotating glass cubes (Rainbow soap material, `n_d = 1.272`,
-`V_d = 2.0`, perspective FOV 60°, N = 16) over a grayscale Picsum photo.
+Above: four rotating glass cubes (`n_d = 1.6`, `V_d = 8`, perspective FOV 60°,
+N = 16) over a composite background — this README page (live HTML, via Chrome's
+`CanvasDrawElement` trial) layered on top of a grayscale Picsum photo.
 A monochrome background lets you see the per-wavelength dispersion as pure
-spectral colors instead of mixing with the photo's own chroma — every band
-on the cube is the shader splitting the photo by wavelength in real time at
-60 fps.
-
-Below: same cubes against a Paris streetscape — top-left cube shows a full
-red→blue spectrum where the back-face exit lands on the bright sky.
-
-![Cubes over Paris](docs/images/demo-strong-dispersion.png)
+spectral colors instead of mixing with the photo's own chroma — every bright
+edge of every cube is the shader splitting the composite by wavelength in
+real time at 60 fps.
 
 ## Why not just shift R/G/B?
 

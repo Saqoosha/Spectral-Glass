@@ -34,7 +34,21 @@ describe('sdfCube', () => {
     const a = sdfCube([HS[0] - EDGE,     HS[1] - EDGE,     HS[2] - EDGE],     HS, EDGE);
     const b = sdfCube([HS[0] - EDGE + 0.1, HS[1] - EDGE + 0.1, HS[2] - EDGE + 0.1], HS, EDGE);
     expect(b - a).toBeGreaterThan(0);
-    // sqrt(3) * 0.1 ≈ 0.173 — matches a rounded corner.
+    // L4 squircle rounding is slightly flatter than the old circular L2 rim.
     expect(b - a).toBeLessThan(0.3);
+  });
+
+  it('eases curvature from flat faces into the rim', () => {
+    const q = 1;
+    const qx = Math.pow(EDGE ** 4 - q ** 4, 0.25);
+    const p: [number, number, number] = [HS[0] - EDGE + qx, HS[1] - EDGE + q, 0];
+    expect(sdfCube(p, HS, EDGE)).toBeCloseTo(0, 5);
+    expect(HS[0] - p[0]).toBeLessThan(0.001);
+  });
+
+  it('can use the legacy circular L2 rim for comparison', () => {
+    const q = EDGE / Math.SQRT2;
+    expect(sdfCube([HS[0] - EDGE + q, HS[1] - EDGE + q, 0], HS, EDGE, false)).toBeCloseTo(0, 5);
+    expect(sdfCube([HS[0] - EDGE + q, HS[1] - EDGE + q, 0], HS, EDGE, true)).toBeLessThan(0);
   });
 });

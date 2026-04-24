@@ -6,6 +6,6 @@ import { defineConfig } from 'vite';
 // `vite dev` and `vite preview` keep base='/' so localhost works without a rewrite.
 export default defineConfig(({ command }) => ({
   base:          command === 'build' ? '/Spectral-Glass/' : '/',
-  server:        { port: 5173 },
+  server:        { port: 5173, allowedHosts: ['.trycloudflare.com'] },
   assetsInclude: ['**/*.wgsl'],
 }));

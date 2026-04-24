@@ -35,8 +35,45 @@ describe('sdfPill3d', () => {
   it('rounded edges: stepping diagonally from a corner is smooth (no sharp creases)', () => {
     const a = sdfPill3d([HS[0] - EDGE, HS[1] - EDGE, HS[2] - EDGE], HS, EDGE);
     const b = sdfPill3d([HS[0] - EDGE + 0.1, HS[1] - EDGE + 0.1, HS[2] - EDGE + 0.1], HS, EDGE);
-    // Monotonic increase as we leave the interior; difference ≈ sqrt(3) · 0.1 for a rounded edge.
+    // Monotonic increase as we leave the interior; L4 rounding stays flatter than an L2 rim.
     expect(b - a).toBeGreaterThan(0);
     expect(b - a).toBeLessThan(0.3);
+  });
+
+  it('eases the top face into the side rim with squircle curvature', () => {
+    const q = 1;
+    const zq = Math.pow(EDGE ** 4 - q ** 4, 0.25);
+    const p: [number, number, number] = [0, HS[1] - EDGE + q, HS[2] - EDGE + zq];
+    expect(sdfPill3d(p, HS, EDGE)).toBeCloseTo(0, 5);
+    expect(HS[2] - p[2]).toBeLessThan(0.001);
+  });
+
+  it('can use the legacy circular L2 rim for comparison', () => {
+    const q = EDGE / Math.SQRT2;
+    const p: [number, number, number] = [0, HS[1] - EDGE + q, HS[2] - EDGE + q];
+    expect(sdfPill3d(p, HS, EDGE, false)).toBeCloseTo(0, 5);
+    expect(sdfPill3d(p, HS, EDGE, true)).toBeLessThan(0);
+  });
+
+  it('becomes a true pill in XY when edgeR exceeds the short half-axis', () => {
+    const hugeEdge = 100;
+    const cap45: [number, number, number] = [
+      HS[0] - HS[1] + HS[1] / Math.SQRT2,
+      HS[1] / Math.SQRT2,
+      0,
+    ];
+    for (const smooth of [false, true]) {
+      expect(sdfPill3d([0, HS[1], 0], HS, hugeEdge, smooth)).toBeCloseTo(0, 5);
+      expect(sdfPill3d([HS[0], 0, 0], HS, hugeEdge, smooth)).toBeCloseTo(0, 5);
+      expect(sdfPill3d(cap45, HS, hugeEdge, smooth)).toBeCloseTo(0, 5);
+      expect(sdfPill3d([HS[0], 0, HS[2]], HS, hugeEdge, smooth)).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps the XY rounded-rect silhouette unchanged when smooth curvature is toggled', () => {
+    const q = EDGE / Math.SQRT2;
+    const capPoint: [number, number, number] = [HS[0] - EDGE + q, HS[1] - EDGE + q, 0];
+    expect(sdfPill3d(capPoint, HS, EDGE, false)).toBeCloseTo(0, 5);
+    expect(sdfPill3d(capPoint, HS, EDGE, true)).toBeCloseTo(0, 5);
   });
 });

@@ -127,7 +127,7 @@ fn pillAnalyticExit(roWorld: vec3<f32>, rdWorld: vec3<f32>, pillIdx: u32) -> Cub
     let n = sdfPillGrad(pL, h, pill.edgeR);
     let nLen2 = dot(n, n);
     if (nLen2 < 1e-8) { break; }
-    pL = pL - n * d * inverseSqrt(nLen2);
+    pL = pL - n * (d / nLen2);
   }
   let nG = sdfPillGrad(pL, h, pill.edgeR);
   let nL2 = dot(nG, nG);
@@ -198,22 +198,20 @@ fn prismAnalyticExit(roWorld: vec3<f32>, rdWorld: vec3<f32>, pillIdx: u32) -> Cu
 // Uses ray-box slab intersection in the cube's local (rotated) frame:
 //   `pExit_local = roL + rdL * tExit`, where tExit is the smallest t at which
 //   the ray leaves one of the three axis-aligned slabs [-halfSize, +halfSize].
-// The outward normal is the rounded-box gradient at `pExit_local`
-//   `normalize(pExit_local - clamp(pExit_local, -(h-edgeR), +(h-edgeR)))`
-// which smoothly blends face→rim→corner exactly like the finite-diff normal
-// did, so the rounded rim keeps its soft refraction.
+// The outward normal is the superellipsoid rounded-box gradient at
+// `pExit_local`. It smoothly blends face→rim→corner exactly like the
+// finite-diff normal did, so the rounded rim keeps its soft refraction.
 //
 // The slab intersection alone overshoots the rounded surface by up to edgeR
 // at rim and corner exits — invisible on a still cube but visibly flickering
 // on a rotating one because the overshoot direction shifts axis frame to
-// frame. After the slab we run 1–2 Newton-style refinement steps using the
-// rounded-box SDF gradient (`grad = pL - clamp(pL, -inner, inner)`,
-// `|grad| - edgeR` is the SDF distance). Each step moves pL by `d *
-// grad/|grad|` along the surface normal, converging to the true rim in
-// closed form for the flat-face case and within HIT_EPS for the rim case.
-// Cost: at most 2 extra clamp + length per back-trace, vs the 48-eval
-// inside-trace + 6-eval finite-diff normal we replaced — still ≈ 16× fewer
-// SDF evals than the original path.
+// frame. After the slab we run 3 Newton-style refinement steps using the
+// rounded-box SDF gradient. Each step is an implicit-surface Newton update,
+// which matters because the L4 squircle rim is a distance estimator whose
+// gradient is shorter than one on diagonal rim/corner spans.
+// Cost: 3 cheap SDF+analytic-gradient evals per back-trace, vs the 48-eval
+// inside-trace + 6-eval finite-diff normal we replaced — still much cheaper
+// than the original path.
 struct CubeExit {
   pWorld: vec3<f32>,
   nBack:  vec3<f32>,  // inward-facing (into the glass), same sign convention as -sceneNormal
@@ -259,31 +257,27 @@ fn cubeAnalyticExit(roWorld: vec3<f32>, rdWorld: vec3<f32>, pillIdx: u32) -> Cub
   }
 
   var pL    = roL + rdL * tExit;
-  let inner = h - vec3<f32>(pill.edgeR);
-
   // Refine pL onto the rounded surface. For flat-face exits this loop exits
   // immediately because the slab plane IS the rounded surface; for rim/corner
-  // exits each iteration moves pL by the SDF distance along the gradient
-  // direction (Newton's method on the rounded-box SDF). 2 iterations gets us
-  // within float precision of the surface even at acute corners — without
+  // exits each iteration applies Newton's method on the rounded-box implicit
+  // field. 3 iterations gets us within float precision of the surface even at
+  // acute corners — without
   // refinement the exit position oscillates by up to edgeR per frame as the
   // cube rotates and the dominant slab axis flips, producing visible
   // blur-sharp shimmer on the rim.
-  for (var i: i32 = 0; i < 2; i = i + 1) {
-    let q       = clamp(pL, -inner, inner);
-    let grad    = pL - q;
-    let gradLen = length(grad);
-    let d       = gradLen - pill.edgeR;
-    if (gradLen < 1e-4) { break; }  // pL is at the inner core (degenerate)
-    if (abs(d)  < HIT_EPS * 0.1) { break; }  // already on the surface
-    pL = pL - (grad / gradLen) * d;
+  for (var i: i32 = 0; i < 3; i = i + 1) {
+    let d        = sdfCube(pL, h, pill.edgeR);
+    let grad     = sdfCubeGrad(pL, h, pill.edgeR);
+    let gradLen2 = dot(grad, grad);
+    if (gradLen2 < 1e-8) { break; }  // pL is at the inner core (degenerate)
+    if (abs(d)   < HIT_EPS * 0.1) { break; }  // already on the surface
+    pL = pL - grad * (d / gradLen2);
   }
 
   // Rounded-box gradient at the refined pL: normal blends from axis-aligned
-  // in the flat face region to radial in the rim/corner region, matching the
+  // in the flat face region to superellipsoid rim/corner, matching the
   // finite-diff normal the sphere-trace path would compute.
-  let q         = clamp(pL, -inner, inner);
-  let roundedN  = pL - q;
+  let roundedN  = sdfCubeGrad(pL, h, pill.edgeR);
   let roundedL2 = dot(roundedN, roundedN);
   var nOutL: vec3<f32>;
   if (roundedL2 > 1e-8) {

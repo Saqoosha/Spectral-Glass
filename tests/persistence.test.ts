@@ -302,6 +302,39 @@ describe('persistence — bgSource allow-list validation', () => {
   });
 });
 
+describe('persistence — smoothCurvature boolean guard', () => {
+  beforeEach(() => {
+    installStorage();
+  });
+
+  it('accepts true and false', () => {
+    const mem = installStorage();
+    for (const val of [true, false]) {
+      mem.clear();
+      writeRaw(mem, { smoothCurvature: val });
+      expect(loadStored()?.params.smoothCurvature).toBe(val);
+    }
+  });
+
+  it('rejects non-boolean values', () => {
+    const mem = installStorage();
+    for (const bogus of ['true', 1, null, {}, []]) {
+      mem.clear();
+      writeRaw(mem, { smoothCurvature: bogus as unknown });
+      expect(loadStored()?.params.smoothCurvature).toBeUndefined();
+    }
+  });
+
+  it('round-trips through save() + loadStored()', () => {
+    installStorage();
+    const params = defaultParamsForSave();
+    for (const val of [true, false]) {
+      save(mergeParams(params, { smoothCurvature: val }), []);
+      expect(loadStored()?.params.smoothCurvature).toBe(val);
+    }
+  });
+});
+
 describe('persistence — unavailable / corrupt storage', () => {
   it('returns null when localStorage.getItem throws', () => {
     const fail: Storage = {

@@ -109,6 +109,7 @@ function validateParams(u: unknown): Partial<Params> {
   }
   if (typeof p.temporalJitter === 'boolean') out.temporalJitter    = p.temporalJitter;
   if (typeof p.debugProxy === 'boolean')     out.debugProxy        = p.debugProxy;
+  if (typeof p.smoothCurvature === 'boolean') out.smoothCurvature  = p.smoothCurvature;
   if (typeof p.aaMode === 'string' && AA_MODES.has(p.aaMode as AaMode)) out.aaMode = p.aaMode as AaMode;
   // Legacy migration: older payloads carry `taa: boolean`. Preserve the
   // user's intent (taa:false -> 'none', taa:true -> 'taa') instead of

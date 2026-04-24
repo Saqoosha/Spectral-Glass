@@ -63,6 +63,7 @@ function baseParams(overrides: Partial<FrameParams>): FrameParams {
     cameraZ:            400,
     projection:         1,
     debugProxy:         false,
+    smoothCurvature:    true,
     taaEnabled:         true,
     sceneTime:          1.5,
     prevSceneTime:      1.4,        // deliberately != sceneTime so a smear would be visible
@@ -219,15 +220,23 @@ describe('writeFrame — diamond rotation slot selection', () => {
     expect(scratch[ENVMAP_PARAMS_FLOAT_OFFSET + 0]).toBeCloseTo(0.37, 6);
     expect(scratch[ENVMAP_PARAMS_FLOAT_OFFSET + 1]).toBeCloseTo(1.23, 6);
     expect(scratch[ENVMAP_PARAMS_FLOAT_OFFSET + 2]).toBe(1);
-    // Pad slot stays zero (scratch.fill(0)); if a future field lands
-    // there this test catches the collision.
-    expect(scratch[ENVMAP_PARAMS_FLOAT_OFFSET + 3]).toBe(0);
+    expect(scratch[ENVMAP_PARAMS_FLOAT_OFFSET + 3]).toBe(1);
 
     // envmapEnabled = false maps to 0 — the shader's `> 0.5` gate
     // needs exact 0/1, so regression-pin the boolean conversion.
     const off = mockDevice();
     writeFrame(off.device, buf, baseParams({ envmapEnabled: false }));
     expect(off.writes[0]!.src[ENVMAP_PARAMS_FLOAT_OFFSET + 2]).toBe(0);
+  });
+
+  it('writes smoothCurvature into the fourth envmap params slot', () => {
+    const on = mockDevice();
+    writeFrame(on.device, {} as GPUBuffer, baseParams({ smoothCurvature: true }));
+    expect(on.writes[0]!.src[ENVMAP_PARAMS_FLOAT_OFFSET + 3]).toBe(1);
+
+    const off = mockDevice();
+    writeFrame(off.device, {} as GPUBuffer, baseParams({ smoothCurvature: false }));
+    expect(off.writes[0]!.src[ENVMAP_PARAMS_FLOAT_OFFSET + 3]).toBe(0);
   });
 
   it('writeFrame accepts every view in DIAMOND_VIEW_VALUES without throwing', () => {

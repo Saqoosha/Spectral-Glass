@@ -1,12 +1,39 @@
 // ---------- SDF ----------
 
+fn superellipseLength2(v: vec2<f32>) -> f32 {
+  let v2 = v * v;
+  return sqrt(sqrt(dot(v2, v2)));
+}
+
+fn superellipsoidLength3(v: vec3<f32>) -> f32 {
+  let v2 = v * v;
+  return sqrt(sqrt(dot(v2, v2)));
+}
+
+fn roundedLength2(v: vec2<f32>) -> f32 {
+  if (frame.smoothCurvature > 0.5) {
+    return superellipseLength2(v);
+  }
+  return length(v);
+}
+
+fn roundedLength3(v: vec3<f32>) -> f32 {
+  if (frame.smoothCurvature > 0.5) {
+    return superellipsoidLength3(v);
+  }
+  return length(v);
+}
+
 fn sdfPill(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> f32 {
-  let hsXY = halfSize.xy - vec2<f32>(edgeR);
-  let rXY  = min(hsXY.x, hsXY.y);
-  let qXY  = abs(p.xy) - hsXY + vec2<f32>(rXY);
-  let dXy  = length(max(qXY, vec2<f32>(0.0))) + min(max(qXY.x, qXY.y), 0.0) - rXY;
-  let w    = vec2<f32>(dXy, abs(p.z) - halfSize.z + edgeR);
-  return length(max(w, vec2<f32>(0.0))) + min(max(w.x, w.y), 0.0) - edgeR;
+  let xyR  = min(edgeR, min(halfSize.x, halfSize.y));
+  let zR   = min(edgeR, halfSize.z);
+  let qXY  = abs(p.xy) - (halfSize.xy - vec2<f32>(xyR));
+  // Keep the front silhouette a true circular capsule. Smooth curvature only
+  // affects the Z roundover, so toggling it changes refraction joins without
+  // turning the pill outline into a squircle.
+  let dXy  = length(max(qXY, vec2<f32>(0.0))) + min(max(qXY.x, qXY.y), 0.0) - xyR;
+  let w    = vec2<f32>(dXy + zR, abs(p.z) - halfSize.z + zR);
+  return roundedLength2(max(w, vec2<f32>(0.0))) + min(max(w.x, w.y), 0.0) - zR;
 }
 
 // Unnormalised ∇(sdfPill) via central differences — for Newton refinement and
@@ -21,10 +48,36 @@ fn sdfPillGrad(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> vec3<f32> {
   );
 }
 
-// Rounded box / cuboid. Equal halfSize = cube.
+// Rounded box / cuboid. The rim uses an L4 superellipsoid/squircle norm so
+// face-to-rim curvature eases in from zero instead of stepping from flat to
+// circular. Equal halfSize = cube.
 fn sdfCube(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> f32 {
   let q = abs(p) - halfSize + vec3<f32>(edgeR);
-  return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - edgeR;
+  return roundedLength3(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - edgeR;
+}
+
+fn sdfCubeGrad(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> vec3<f32> {
+  let q = abs(p) - halfSize + vec3<f32>(edgeR);
+  let a = max(q, vec3<f32>(0.0));
+  let s = select(vec3<f32>(-1.0), vec3<f32>(1.0), p >= vec3<f32>(0.0));
+  if (frame.smoothCurvature > 0.5) {
+    let l = superellipsoidLength3(a);
+    if (l > 1e-6) {
+      return s * (a * a * a) / (l * l * l);
+    }
+  } else {
+    let l = length(a);
+    if (l > 1e-6) {
+      return s * a / l;
+    }
+  }
+  if (q.x >= q.y && q.x >= q.z) {
+    return vec3<f32>(s.x, 0.0, 0.0);
+  }
+  if (q.y >= q.z) {
+    return vec3<f32>(0.0, s.y, 0.0);
+  }
+  return vec3<f32>(0.0, 0.0, s.z);
 }
 
 // Isosceles triangle in YZ (apex +Z, base -Z), extruded along X. Half-sizes

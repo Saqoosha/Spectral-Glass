@@ -435,6 +435,11 @@ async function main(): Promise<void> {
     if (k === 'r' && !params.envmapEnabled) {
       void reloadPhoto(); /* markSceneChanged on success — same as Reload photo (hidden when HDR env on) */
     }
+    if (k === 'h') {
+      const panes = document.querySelectorAll<HTMLElement>('.tp-dfwv');
+      const hidden = panes[0]?.style.display === 'none';
+      panes.forEach((el) => { el.style.display = hidden ? '' : 'none'; });
+    }
     // Diamond view presets — snap to canonical poses for facet geometry
     // checking. T/S/B/F mirror the Tweakpane dropdown so either path works.
     // Only active when the diamond shape is selected (the param exists
@@ -554,9 +559,11 @@ async function main(): Promise<void> {
 
       // Plate forces a square XY face (hy ≡ hx) so pillShort is effectively
       // unused. Plate's wave lives under `shapes.plate` →
-      // `frame.waveAmp` (separate uniform). For plate, `pill.edgeR` is the
-      // rim fillet (same `min(edgeR, halfSize)` idea as pill/cube). Prism has
-      // sharp SDF (no fillet) — the loop below forces `edgeR = 0` for it.
+      // `frame.waveAmp` (separate uniform). For plate/cube, `pill.edgeR` is
+      // the rim fillet clamped to all half-axes. Pill clamps inside the SDF
+      // as two radii: XY can grow to the short axis, while Z still clamps to
+      // thickness so high edgeR produces a real pill without flattening the
+      // top/bottom rounding. Prism has sharp SDF (no fillet).
       //
       // Diamond ignores per-pill halfSize entirely on the SDF side (shader
       // reads `frame.diamondSize`), but we still write halfSize to the
@@ -586,7 +593,10 @@ async function main(): Promise<void> {
           pill.hy    = isPlate ? pill.hx : uf.pillShort / 2;
           pill.hz    = uf.pillThick / 2;
           // Prism: sharp isosceles solid — GPU uses `sdfPrism` with no fillet; keep 0.
-          pill.edgeR = isPrism ? 0 : Math.min(uf.edgeR, pill.hx, pill.hy, pill.hz);
+          // Pill receives raw edgeR so sdfPill can split it into XY and Z radii.
+          pill.edgeR = isPrism ? 0
+            : params.shape === 'pill' ? uf.edgeR
+            : Math.min(uf.edgeR, pill.hx, pill.hy, pill.hz);
         }
       }
       // Paused-frame accounting for progressive averaging (see declaration
@@ -658,6 +668,7 @@ async function main(): Promise<void> {
         cameraZ,
         projection:         PROJECTION_ID[params.projection],
         debugProxy:         params.debugProxy,
+        smoothCurvature:    params.smoothCurvature,
         // TAA sub-pixel jitter + motion-vector reprojection only enabled when
         // aaMode === 'taa'. FXAA handles AA in the post pass instead, and
         // 'none' renders with neither.

@@ -22,6 +22,7 @@ export type FrameParams = {
   readonly cameraZ:            number;  // distance from screen plane (z=0) to the camera, in pixels
   readonly projection:         number;  // 0 = orthographic, 1 = perspective
   readonly debugProxy:         boolean; // tint proxy fragments pink for debugging
+  readonly smoothCurvature:    boolean; // pill/cube: true = L4 squircle rim, false = legacy circular rim.
   readonly taaEnabled:         boolean; // jitter ray origin per frame so history EMA antialiases shader-decided silhouettes
   readonly sceneTime:          number;  // time value driving rotation + wave phase. Freezes on "Stop the world" while `time` above keeps advancing so AA continues to converge.
   readonly prevSceneTime:      number;  // sceneTime of the previous frame — drives motion-vector reprojection so history follows rotating shapes
@@ -54,7 +55,7 @@ export type FrameParams = {
 //   offset 320: diamondRotPrev mat3x3<f32>                        (48 B)
 //   offset 368: waveAmp, waveFreq, waveLipFactor, sceneTime       (16 B)
 //   offset 384: diamondSize + 3 diamond bool-flags + tirMaxBounces + 3 pad  (32 B)
-//   offset 416: envmapExposure, envmapRotation, envmapEnabled, pad (16 B)
+//   offset 416: envmapExposure, envmapRotation, envmapEnabled, smoothCurvature (16 B)
 //   offset 432: pills[0..MAX_PILLS] — each pill is vec3 + f32 + vec3 + f32 (32 B)
 const HEAD_FLOATS              = 20;                                // 80 B
 const CUBE_ROT_FLOATS          = 12;                                // 48 B (3 padded cols)
@@ -65,7 +66,7 @@ const DIAMOND_ROT_FLOATS       = 12;                                // 48 B
 const DIAMOND_ROT_PREV_FLOATS  = 12;                                // 48 B (prev-frame diamond for reprojection)
 const PLATE_PARAMS_FLOATS      = 4;                                 // 16 B (3 used + 1 pad)
 const DIAMOND_PARAMS_FLOATS    = 8;                                 // 32 B (size + 3 bool-flags + tir max + 3× pad)
-const ENVMAP_PARAMS_FLOATS     = 4;                                 // 16 B (exposure + rotation + enabled + pad)
+const ENVMAP_PARAMS_FLOATS     = 4;                                 // 16 B (exposure + rotation + enabled + smooth-curvature flag)
 const PILL_FLOATS              = 8;                                 // 32 B per pill
 const TOTAL_FLOATS    = HEAD_FLOATS
                        + CUBE_ROT_FLOATS    + CUBE_ROT_PREV_FLOATS
@@ -175,16 +176,14 @@ export function writeFrame(device: GPUDevice, buf: GPUBuffer, p: FrameParams): v
   );
   // +5, +6, +7 remain zero (scratch.fill(0))
 
-  // Envmap params. `envmapEnabled` is a boolean-as-f32 so the shader's
-  // `frame.envmapEnabled > 0.5` guard matches the other diamond debug
-  // flags' convention.
+  // Envmap params plus one spare-scene flag. `envmapEnabled` and
+  // `smoothCurvature` are boolean-as-f32 so shader-side `> 0.5` gates match
+  // the other debug flags' convention.
   const envmapParamsBase = diamondParamsBase + DIAMOND_PARAMS_FLOATS;
   scratch[envmapParamsBase + 0] = p.envmapExposure;
   scratch[envmapParamsBase + 1] = p.envmapRotation;
   scratch[envmapParamsBase + 2] = p.envmapEnabled ? 1 : 0;
-  // slot 3 is the alignment pad left at scratch.fill(0)'s zero — reserved
-  // for a future envmap control (IBL mip bias, tint, etc.) without
-  // another layout bump.
+  scratch[envmapParamsBase + 3] = p.smoothCurvature ? 1 : 0;
 
   const pillBase  = envmapParamsBase + ENVMAP_PARAMS_FLOATS;
   const pillCount = Math.min(p.pills.length, MAX_PILLS);
