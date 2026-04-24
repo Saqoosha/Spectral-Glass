@@ -53,4 +53,12 @@ describe('sdfCube', () => {
     expect(sdfCube([HS[0] - EDGE + q, HS[1] - EDGE + q, 0], HS, EDGE, false)).toBeCloseTo(0, 5);
     expect(sdfCube([HS[0] - EDGE + q, HS[1] - EDGE + q, 0], HS, EDGE, true)).toBeCloseTo(0, 5);
   });
+
+  it('blends back to a true circular rim when the radius reaches the half-size limit', () => {
+    const fullRound = HS[0];
+    const q = fullRound / Math.SQRT2;
+    const p: [number, number, number] = [q, q, 0];
+    expect(sdfCube(p, HS, fullRound, false)).toBeCloseTo(0, 5);
+    expect(sdfCube(p, HS, fullRound, true)).toBeCloseTo(0, 5);
+  });
 });

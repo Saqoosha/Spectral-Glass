@@ -107,6 +107,7 @@ describe('sdfWavyPlate shader rim', () => {
     const match = /fn sdfWavyPlate[\s\S]*?return box \* frame\.waveLipFactor;\n\}/.exec(wgsl);
     expect(match).not.toBeNull();
     const body = match?.[0] ?? '';
+    expect(body).toContain('adaptiveRoundBlend(edgeR');
     expect(body).toContain('visualRoundRadius(edgeR');
     expect(body).toContain('roundedLength3(max(q');
     expect(body).not.toContain('let box    = length(max(q');

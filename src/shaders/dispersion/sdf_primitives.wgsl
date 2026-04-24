@@ -1,6 +1,7 @@
 // ---------- SDF ----------
 
 const L4_VISUAL_RADIUS_SCALE: f32 = 1.84089642;
+const ADAPTIVE_ROUND_START: f32 = 0.65;
 
 fn superellipseLength2(v: vec2<f32>) -> f32 {
   let v2 = v * v;
@@ -12,23 +13,29 @@ fn superellipsoidLength3(v: vec3<f32>) -> f32 {
   return sqrt(sqrt(dot(v2, v2)));
 }
 
-fn visualRoundRadius(edgeR: f32, limit: f32) -> f32 {
-  if (frame.smoothCurvature > 0.5) {
-    return min(edgeR * L4_VISUAL_RADIUS_SCALE, limit);
+fn adaptiveRoundBlend(edgeR: f32, limit: f32) -> f32 {
+  if (frame.smoothCurvature <= 0.5) {
+    return 1.0;
   }
-  return min(edgeR, limit);
+  return smoothstep(ADAPTIVE_ROUND_START, 1.0, edgeR / max(limit, 1e-6));
 }
 
-fn roundedLength2(v: vec2<f32>) -> f32 {
+fn visualRoundRadius(edgeR: f32, limit: f32) -> f32 {
+  let blend = adaptiveRoundBlend(edgeR, limit);
+  let scale = mix(L4_VISUAL_RADIUS_SCALE, 1.0, blend);
+  return min(edgeR * scale, limit);
+}
+
+fn roundedLength2(v: vec2<f32>, blend: f32) -> f32 {
   if (frame.smoothCurvature > 0.5) {
-    return superellipseLength2(v);
+    return mix(superellipseLength2(v), length(v), blend);
   }
   return length(v);
 }
 
-fn roundedLength3(v: vec3<f32>) -> f32 {
+fn roundedLength3(v: vec3<f32>, blend: f32) -> f32 {
   if (frame.smoothCurvature > 0.5) {
-    return superellipsoidLength3(v);
+    return mix(superellipsoidLength3(v), length(v), blend);
   }
   return length(v);
 }
@@ -36,13 +43,14 @@ fn roundedLength3(v: vec3<f32>) -> f32 {
 fn sdfPill(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> f32 {
   let xyR  = min(edgeR, min(halfSize.x, halfSize.y));
   let zR   = visualRoundRadius(edgeR, halfSize.z);
+  let zBlend = adaptiveRoundBlend(edgeR, halfSize.z);
   let qXY  = abs(p.xy) - (halfSize.xy - vec2<f32>(xyR));
   // Keep the front silhouette a true circular capsule. Smooth curvature only
   // affects the Z roundover, so toggling it changes refraction joins without
   // turning the pill outline into a squircle.
   let dXy  = length(max(qXY, vec2<f32>(0.0))) + min(max(qXY.x, qXY.y), 0.0) - xyR;
   let w    = vec2<f32>(dXy + zR, abs(p.z) - halfSize.z + zR);
-  return roundedLength2(max(w, vec2<f32>(0.0))) + min(max(w.x, w.y), 0.0) - zR;
+  return roundedLength2(max(w, vec2<f32>(0.0)), zBlend) + min(max(w.x, w.y), 0.0) - zR;
 }
 
 // Unnormalised ∇(sdfPill) via central differences — for Newton refinement and
@@ -61,20 +69,27 @@ fn sdfPillGrad(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> vec3<f32> {
 // face-to-rim curvature eases in from zero instead of stepping from flat to
 // circular. Equal halfSize = cube.
 fn sdfCube(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> f32 {
-  let r = visualRoundRadius(edgeR, min(halfSize.x, min(halfSize.y, halfSize.z)));
+  let limit = min(halfSize.x, min(halfSize.y, halfSize.z));
+  let blend = adaptiveRoundBlend(edgeR, limit);
+  let r = visualRoundRadius(edgeR, limit);
   let q = abs(p) - halfSize + vec3<f32>(r);
-  return roundedLength3(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
+  return roundedLength3(max(q, vec3<f32>(0.0)), blend) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
 }
 
 fn sdfCubeGrad(p: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> vec3<f32> {
-  let r = visualRoundRadius(edgeR, min(halfSize.x, min(halfSize.y, halfSize.z)));
+  let limit = min(halfSize.x, min(halfSize.y, halfSize.z));
+  let blend = adaptiveRoundBlend(edgeR, limit);
+  let r = visualRoundRadius(edgeR, limit);
   let q = abs(p) - halfSize + vec3<f32>(r);
   let a = max(q, vec3<f32>(0.0));
   let s = select(vec3<f32>(-1.0), vec3<f32>(1.0), p >= vec3<f32>(0.0));
   if (frame.smoothCurvature > 0.5) {
-    let l = superellipsoidLength3(a);
-    if (l > 1e-6) {
-      return s * (a * a * a) / (l * l * l);
+    let l4 = superellipsoidLength3(a);
+    if (l4 > 1e-6) {
+      let l2 = length(a);
+      let l4Grad = (a * a * a) / (l4 * l4 * l4);
+      let l2Grad = a / l2;
+      return s * mix(l4Grad, l2Grad, blend);
     }
   } else {
     let l = length(a);
@@ -181,9 +196,11 @@ fn sdfWavyPlate(pIn: vec3<f32>, halfSize: vec3<f32>, edgeR: f32) -> f32 {
   // sdfCube so the plate's rim can be compared against the legacy circular
   // fillet without changing the slider value.
   let pShift = vec3<f32>(p.x, p.y, p.z - waveZ);
-  let r      = visualRoundRadius(edgeR, min(h.x, min(h.y, h.z)));
+  let limit  = min(h.x, min(h.y, h.z));
+  let blend  = adaptiveRoundBlend(edgeR, limit);
+  let r      = visualRoundRadius(edgeR, limit);
   let q      = abs(pShift) - h + vec3<f32>(r);
-  let box    = roundedLength3(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
+  let box    = roundedLength3(max(q, vec3<f32>(0.0)), blend) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
 
   return box * frame.waveLipFactor;
 }

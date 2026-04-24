@@ -42,12 +42,13 @@ describe('sdfPill3d', () => {
   });
 
   it('eases the top face into the side rim with squircle curvature', () => {
-    const zR = Math.min(EDGE * L4_VISUAL_RADIUS_SCALE, HS[2]);
+    const hs: [number, number, number] = [160, 44, 80];
+    const zR = EDGE * L4_VISUAL_RADIUS_SCALE;
     const q = 1;
     const zq = Math.pow(zR ** 4 - q ** 4, 0.25);
-    const p: [number, number, number] = [0, HS[1] - zR + q, HS[2] - zR + zq];
-    expect(sdfPill3d(p, HS, EDGE)).toBeCloseTo(0, 5);
-    expect(HS[2] - p[2]).toBeLessThan(0.001);
+    const p: [number, number, number] = [0, hs[1] - zR + q, hs[2] - zR + zq];
+    expect(sdfPill3d(p, hs, EDGE)).toBeCloseTo(0, 5);
+    expect(hs[2] - p[2]).toBeLessThan(0.001);
   });
 
   it('compensates smooth L4 so its 45-degree Z roundover matches the legacy L2 rim', () => {
@@ -78,5 +79,13 @@ describe('sdfPill3d', () => {
     const capPoint: [number, number, number] = [HS[0] - EDGE + q, HS[1] - EDGE + q, 0];
     expect(sdfPill3d(capPoint, HS, EDGE, false)).toBeCloseTo(0, 5);
     expect(sdfPill3d(capPoint, HS, EDGE, true)).toBeCloseTo(0, 5);
+  });
+
+  it('blends the Z roundover back to a true half-circle at the thickness limit', () => {
+    const fullRound = HS[2];
+    const q = fullRound / Math.SQRT2;
+    const p: [number, number, number] = [0, HS[1] - fullRound + q, q];
+    expect(sdfPill3d(p, HS, fullRound, false)).toBeCloseTo(0, 5);
+    expect(sdfPill3d(p, HS, fullRound, true)).toBeCloseTo(0, 5);
   });
 });
