@@ -138,23 +138,34 @@ async function main(): Promise<void> {
   let resetHistoryFrames = 2;
   const markSceneChanged = () => { resetHistoryFrames = 2; };
 
-  /** Same Picsum image as the GPU photo texture, for the HTML-in-Canvas snapshot. */
+  /** Same Picsum image as the GPU photo texture, for the HTML-in-Canvas snapshot.
+   *  Race-guarded like `reloadPhoto` — rapid Random clicks shouldn't let an older
+   *  fetch's onload/onerror clobber the newer one's class state. */
+  let underlayRevision = 0;
   const syncPicsumUnderlay = (): void => {
     if (!htmlInCanvasReady) return;
     if (!(htmlBgPhoto instanceof HTMLImageElement) || !(htmlBgEl instanceof HTMLElement)) return;
+    const rev = ++underlayRevision;
     const url = picsumPhotoUrl(photoSeed);
     const rep = (): void => {
       ctx.canvas.requestPaint?.();
       queueMicrotask(() => { ctx.canvas.requestPaint?.(); });
     };
     htmlBgPhoto.onload = () => {
+      if (rev !== underlayRevision) return;
       htmlBgEl.classList.remove('html-bg--gradient-fallback');
       htmlBgPhoto.removeAttribute('hidden');
       rep();
     };
-    htmlBgPhoto.onerror = () => {
+    htmlBgPhoto.onerror = (ev) => {
+      if (rev !== underlayRevision) return;
+      console.error('[html-bg] underlay image failed to load:', url, ev);
       htmlBgPhoto.setAttribute('hidden', '');
       htmlBgEl.classList.add('html-bg--gradient-fallback');
+      // GPU photo succeeded but HTML underlay didn't: refraction and
+      // pass-through background now show different images. Tell the user
+      // so the visual mismatch isn't mistaken for a rendering bug.
+      showNotice('HTML background image failed — underlay uses gradient (GPU photo unchanged).');
       rep();
     };
     htmlBgPhoto.removeAttribute('hidden');
@@ -169,7 +180,13 @@ async function main(): Promise<void> {
     try {
       const nextSeed = Date.now();
       const { photo: next, usedGradientFallback } = await loadPhoto(ctx.device, nextSeed);
-      if (rev !== photoRevision) { destroyPhoto(next); return; }
+      if (rev !== photoRevision) {
+        // User clicked Reload again before this fetch resolved — discard
+        // silently, but log so the developer can see why nothing updated.
+        console.info('[photo] reload superseded by newer request, discarding rev', rev);
+        destroyPhoto(next);
+        return;
+      }
       if (usedGradientFallback) {
         destroyPhoto(next);
         showNotice('Picsum photo fetch failed — previous image kept.');
@@ -292,10 +309,28 @@ async function main(): Promise<void> {
 
   if (htmlInCanvasReady) {
     ctx.canvas.layoutSubtree = true;
+    // Persistent copy-failure → fall back to Picsum so the user isn't
+    // stuck with a frozen HTML snapshot and no indication why. Threshold
+    // is low (3 consecutive frames) because a real failure tends to
+    // repeat every paint.
+    let htmlBgCopyFailCount = 0;
+    const HTML_BG_COPY_FAIL_MAX = 3;
     const onPaint = (): void => {
       if (params.bgSource !== 'html' || !htmlPhoto) return;
       if (!(htmlBgEl instanceof HTMLElement)) return;
-      copyHtmlLayerToTexture(ctx.device.queue, htmlBgEl, htmlPhoto.texture);
+      const ok = copyHtmlLayerToTexture(ctx.device.queue, htmlBgEl, htmlPhoto.texture);
+      if (ok) {
+        htmlBgCopyFailCount = 0;
+        return;
+      }
+      htmlBgCopyFailCount += 1;
+      if (htmlBgCopyFailCount >= HTML_BG_COPY_FAIL_MAX && params.bgSource === 'html') {
+        params.bgSource = 'photo';
+        paneRef?.refresh();
+        markSceneChanged();
+        persist();
+        showNotice('HTML background sync failed — falling back to Picsum.', 6_000);
+      }
     };
     ctx.canvas.addEventListener('paint', onPaint);
     if (htmlBgForeground instanceof HTMLElement) {
@@ -469,8 +504,14 @@ async function main(): Promise<void> {
       if (htmlInCanvasReady) {
         if (params.bgSource === 'html') {
           if (!htmlPhoto || htmlPhoto.width !== width || htmlPhoto.height !== height) {
+            // Defer destroy until pending GPU work drains — the previous
+            // frame's command buffer may still reference the old texture.
+            // Same pattern as photo.ts / envmap.ts `reloadPhoto` swap.
             if (htmlPhoto) {
-              destroyHtmlBackgroundTexture(htmlPhoto);
+              const old = htmlPhoto;
+              ctx.device.queue.onSubmittedWorkDone()
+                .then(() => destroyHtmlBackgroundTexture(old))
+                .catch((err) => console.error('[html-bg] queue drain failed, skipping destroy:', err));
               htmlPhoto = null;
             }
             htmlPhoto = createHtmlBackgroundTexture(ctx.device, width, height);
@@ -481,8 +522,11 @@ async function main(): Promise<void> {
             queueMicrotask(() => { ctx.canvas.requestPaint?.(); });
           }
         } else if (htmlPhoto) {
-          destroyHtmlBackgroundTexture(htmlPhoto);
+          const old = htmlPhoto;
           htmlPhoto = null;
+          ctx.device.queue.onSubmittedWorkDone()
+            .then(() => destroyHtmlBackgroundTexture(old))
+            .catch((err) => console.error('[html-bg] queue drain failed, skipping destroy:', err));
           rebuildBindGroups(ctx, pl, frameBuf, photoNow, envmapNow, history);
         }
       }

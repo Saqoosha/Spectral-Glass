@@ -163,17 +163,15 @@ fn fs_main(in: ProxyFsIn) -> FsOut {
   let isPrism   = shapeId == 1;
   let isCube    = shapeId == 2;
   let isPlate   = shapeId == 3;
-  let isDiamond = shapeId == 4;
+  // Diamond (shapeId == 4) is dispatched to `fs_main_diamond` via the
+  // `diamondProxy` pipeline (see encodeScene in src/webgpu/pipeline.ts),
+  // so it never reaches `fs_main`. No `isDiamond` branches here.
+  //
   // `hasMotionPivot` gates the TAA reprojection call below: a shape needs
-  // a per-frame rotation uniform (cubeRot / plateRot / diamondRot) for
-  // reprojection to make sense. Diamond had the rotation uniform from
-  // Phase A (and needed motion-pivot reprojection even while it still
-  // used the generic `insideTrace`); Phase B added the analytical exit
-  // for diamond, which incidentally made this set match the
-  // `backExit()` analytic-exit dispatch. If a future shape gets a
-  // rotation uniform WITHOUT an analytic exit (or vice versa), split
-  // this back into two names.
-  let hasMotionPivot  = isCube || isPlate || isDiamond;
+  // a per-frame rotation uniform (cubeRot / plateRot) for reprojection to
+  // make sense. (Diamond has its own motion-pivot path inside
+  // `fs_main_diamond`.)
+  let hasMotionPivot  = isCube || isPlate;
 
   // Bg-fallback short-circuit. Run BEFORE `sceneNormal` because WGSL `select`
   // evaluates both arms — wrapping `sceneNormal(h.p)` in select(_, _, h.ok)
@@ -184,15 +182,13 @@ fn fs_main(in: ProxyFsIn) -> FsOut {
   }
 
   // Hit path. Pill-index scan is per-shape; gated on h.ok above so misses
-  // skip it entirely. Diamond still participates — not for analytic back-exit
-  // (that's Phase B) but because `reprojectHit` needs the right pill center
-  // to compute motion vectors for multi-instance scenes.
+  // skip it entirely. (Diamond's instanceIdx dispatch lives in
+  // `fs_main_diamond` — it never reaches this `fs_main` path.)
   var analyticIdx: u32 = 0u;
   if      (isPill)    { analyticIdx = hitPillPillIdx(h.p); }
   else if (isPrism)   { analyticIdx = hitPrismPillIdx(h.p); }
   else if (isCube)    { analyticIdx = hitCubePillIdx(h.p); }
   else if (isPlate)   { analyticIdx = hitPlatePillIdx(h.p); }
-  else if (isDiamond) { analyticIdx = in.instanceIdx; }
 
   // `sceneNormal` returns the zero vector when the local gradient is too
   // small to normalise (silhouette / wave-crest singularity). Falling back
@@ -401,108 +397,15 @@ fn fs_main(in: ProxyFsIn) -> FsOut {
     let r2TIR       = r2dot < 1e-4 && !r2NaN;
     let r2OOB       = !uvInBounds;
     if (r2TIR) {
-      // Phase B: for diamond, try a short chain of internal bounces before
-      // falling back. Each iteration reflects the inside ray off the
-      // current facet, analytically finds the NEXT facet, and tries to
-      // refract out. Deeper girdle / side views often need 4+ internal
-      // reflections; we cap the loop and accept perf trade-off. The Phase A
-      // fallback (`reflSrc`) substituted the front-face
-      // external-reflection photo sample, which read as "other facets
-      // suddenly appearing" when TIR pixels flickered across facet
-      // boundaries during tumble — we're replacing that with the bounce
-      // chain + a clean bg blend on exhaustion.
-      // Gate the bounce chain on exact mode. In approx mode (useHero),
-      // pExit/nBack are the HERO wavelength's back-face exit shared across
-      // all λ (see the `!useHero` branch that ran backExit above), and
-      // heroLambda jitters frame-to-frame; running the bounce chain off
-      // a hero-exit origin would pick a different facet for the second
-      // bounce each frame and produce visible flicker at TIR boundaries.
-      // Approx-mode diamond falls back to reflSrc like every non-diamond
-      // shape — same trade-off Phase A accepted for approx mode's
-      // per-frame speed win.
-      if (isDiamond && !useHero) {
-        var curR1    = r1;
-        var curNBack = nBack;
-        var curP     = pExit;
-        var outDir: vec3<f32> = vec3<f32>(0.0);
-        var resolved: bool     = false;
-        // True if we bailed on `diamondAnalyticExit` miss (not "ran out of bounces
-        // but refract still TIR") — TIR debug tints this orange vs pink.
-        var tirDbgAnalyticMiss: bool = false;
-        // Internal reflection budget (inspector: 1..32, default 6).
-        let tirMaxB = u32(clamp(round(frame.diamondTirMaxBounces), 1.0, 32.0));
-        for (var bounce: u32 = 0u; bounce < tirMaxB; bounce = bounce + 1u) {
-          let bouncedR1 = reflect(curR1, curNBack);
-          let roNudge = clamp(
-            frame.diamondSize * TIR_BOUNCE_RO_NUDGE_SCALE,
-            TIR_BOUNCE_RO_NUDGE_FLOOR,
-            TIR_BOUNCE_RO_NUDGE_CEIL,
-          );
-          let roChain = curP + bouncedR1 * roNudge;
-          let exN     = diamondAnalyticExit(roChain, bouncedR1, analyticIdx);
-          if (dot(exN.nBack, exN.nBack) < 0.25) {
-            tirDbgAnalyticMiss = true;
-            break;
-          }
-          let trial    = refract(bouncedR1, exN.nBack, ior);
-          let trialDot = dot(trial, trial);
-          // Self-compare catches NaN (WGSL's `<` against NaN is always
-          // false, same pattern as the outer-loop r2NaN guard above).
-          let trialNaN = trialDot != trialDot;
-          if (trialDot >= 1e-4 && !trialNaN) {
-            outDir   = trial;
-            resolved = true;
-            break;
-          }
-          // Still TIR. Move the "current" state to this bounce's exit and
-          // try the next iteration. Using `exN.nBack` (inward-facing) for
-          // the next reflect() is sign-invariant per reflect's definition
-          // but semantically correct here — we're bouncing the ray off
-          // that facet going back inside the glass for another try.
-          curR1    = bouncedR1;
-          curNBack = exN.nBack;
-          curP     = exN.pWorld;
-        }
-        if (resolved) {
-          // Envmap enabled → sample the panorama directly at the
-          // outgoing ray direction. `strength` continues to blend
-          // between "no refraction" (rd, same as bg) and "full
-          // refraction" (outDir) so the UI slider keeps meaning.
-          // Photo path: classic UV offset — parallax approximation
-          // assuming the photo sits at a fixed distance behind.
-          let uvOffB    = uv + (outDir - rd).xy * strength;
-          let uvCoverB  = coverUv(uvOffB);
-          let inBoundsB = all(uvCoverB >= vec2<f32>(0.0)) && all(uvCoverB <= vec2<f32>(1.0));
-          let refractPhoto = select(
-            bg,
-            textureSampleLevel(photoTex, photoSmp, uvCoverB, photoLod).rgb,
-            inBoundsB,
-          );
-          let refractEnv = sampleEnvmap(mix(rd, outDir, strength));
-          refractL = select(refractPhoto, refractEnv, frame.envmapEnabled > 0.5);
-        } else {
-          // Exhausted: production uses bg or envmap `reflSrc`. TIR debug: pink =
-          // full bounce budget with refract(s→air) still TIR; orange = analytic
-          // exit miss (see `tirDbgAnalyticMiss` above).
-          let exhaustedFallback = select(bg, reflSrc, frame.envmapEnabled > 0.5);
-          let dbgTir    = vec3<f32>(1.0, 0.2, 0.75);
-          let dbgAnMiss = vec3<f32>(1.0, 0.45, 0.05);
-          let dbgTint   = select(dbgTir, dbgAnMiss, tirDbgAnalyticMiss);
-          refractL = select(exhaustedFallback, dbgTint, frame.diamondTirDebug > 0.5);
-        }
-      } else {
-        // Non-diamond shapes (and diamond in approx mode) skip the
-        // short analytical chain — the chain needs the per-facet
-        // normal that only the Phase B diamond analytical exit can
-        // produce cheaply. Their TIR still benefits from the envmap
-        // indirectly: `reflSrc` resolves to `sampleEnvmap(refl)` when
-        // envmap is enabled, so cube/plate/approx-mode-diamond TIR
-        // samples the real environment instead of the legacy Phase A
-        // UV-offset photo hack. Upgrading them to their own bounce
-        // chain would need analytical cube/plate TIR facet picking —
-        // Phase D territory.
-        refractL = reflSrc;
-      }
+      // Non-diamond shapes (pill/prism/cube/plate) fall back to `reflSrc` on
+      // TIR. Their TIR still benefits from the envmap indirectly: `reflSrc`
+      // resolves to `sampleEnvmap(refl)` when envmap is enabled, so cube/plate
+      // TIR samples the real environment instead of the legacy Phase A
+      // UV-offset photo hack. Upgrading them to their own bounce chain would
+      // need analytical cube/plate TIR facet picking — Phase D territory.
+      // (Diamond has its own multi-bounce analytic TIR chain in
+      // `fs_main_diamond`.)
+      refractL = reflSrc;
     } else if (r2NaN || r2OOB) {
       refractL = bg;
     } else {
@@ -609,31 +512,11 @@ fn fs_main(in: ProxyFsIn) -> FsOut {
     blend = mix(blend, vec3<f32>(1.0, 0.3, 0.7), 0.2);
   }
 
-  // Diamond debug overlays — helpful for cross-checking the cut geometry
-  // against a real brilliant-cut reference. Both write to the DISPLAY
-  // output only, not the history texture, so they don't accumulate into
-  // TAA / history EMA and muddy themselves on subsequent frames.
-  //
-  //   diamondFacetColor: flat-shade each facet class with a distinct
-  //     colour so adjacency + coverage are visible without refraction
-  //     confusing the signal (disable refraction alongside for the
-  //     cleanest view).
-  //   diamondWireframe:  overlay the facet edges on top. Uses the
-  //     plane-gap trick from `sdfDiamondEdgeWeight` — two plane SDFs
-  //     almost equal → facet boundary.
-  var display = blend;
-  if (isDiamond && frame.diamondFacetColor > 0.5) {
-    let pillCenter = frame.pills[analyticIdx].center;
-    display = sdfDiamondFacetColor(h.p - pillCenter, frame.diamondSize);
-  }
-  if (isDiamond && frame.diamondWireframe > 0.5) {
-    let pillCenter = frame.pills[analyticIdx].center;
-    let edgeW      = sdfDiamondEdgeWeight(h.p - pillCenter, frame.diamondSize);
-    display = mix(display, vec3<f32>(1.0, 0.25, 0.25), edgeW * 0.85);
-  }
+  // Diamond debug overlays live in `fs_main_diamond`; `fs_main` only handles
+  // non-diamond shapes and has no facet-color / wireframe pass to draw.
 
   var o: FsOut;
-  o.color   = vec4<f32>(display, 1.0);
+  o.color   = vec4<f32>(blend, 1.0);
   o.history = vec4<f32>(blend, 1.0);
   return o;
 }

@@ -264,6 +264,44 @@ describe('persistence — envmap field validation (Phase C)', () => {
   });
 });
 
+describe('persistence — bgSource allow-list validation', () => {
+  beforeEach(() => {
+    installStorage();
+  });
+
+  for (const src of ['photo', 'html'] as const) {
+    it(`accepts the canonical bgSource "${src}"`, () => {
+      const mem = installStorage();
+      writeRaw(mem, { bgSource: src });
+      expect(loadStored()?.params.bgSource).toBe(src);
+    });
+  }
+
+  it('rejects unknown bgSource strings', () => {
+    const mem = installStorage();
+    writeRaw(mem, { bgSource: 'video' });
+    expect(loadStored()?.params.bgSource).toBeUndefined();
+  });
+
+  it('rejects non-string bgSource values', () => {
+    const mem = installStorage();
+    for (const bogus of [null, 123, true, { src: 'photo' }, ['photo']]) {
+      mem.clear();
+      writeRaw(mem, { bgSource: bogus as unknown });
+      expect(loadStored()?.params.bgSource).toBeUndefined();
+    }
+  });
+
+  it('round-trips bgSource through save() + loadStored()', () => {
+    installStorage();
+    const params = defaultParamsForSave();
+    for (const src of ['photo', 'html'] as const) {
+      save(mergeParams(params, { bgSource: src }), []);
+      expect(loadStored()?.params.bgSource).toBe(src);
+    }
+  });
+});
+
 describe('persistence — unavailable / corrupt storage', () => {
   it('returns null when localStorage.getItem throws', () => {
     const fail: Storage = {

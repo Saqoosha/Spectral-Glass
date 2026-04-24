@@ -323,8 +323,9 @@ fn hitPlatePillIdx(p: vec3<f32>) -> u32 {
   return best;
 }
 
-// (Diamond's `hitDiamondPillIdx` lives in src/shaders/diamond.wgsl alongside
-// sdfDiamond. The dispatch in fs_main below references it directly.)
+// (Diamond's `diamondAnalyticHitScene` lives in src/shaders/diamond.wgsl
+// alongside sdfDiamond. The diamond-specific fs entry picks a hit through
+// it directly — no back-trace reprojection picker is needed.)
 
 // Analytical back-face intersection for a rotated wavy plate. Same payoff as
 // `cubeAnalyticExit`: replaces the per-wavelength `insideTrace` (up to 48 SDF

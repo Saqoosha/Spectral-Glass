@@ -58,10 +58,11 @@ fn sdfPrismGrad(p: vec3<f32>, halfSize: vec3<f32>) -> vec3<f32> {
 
 // Diamond (round brilliant cut) SDF + proxy-mesh helpers live in a separate
 // shader unit: src/shaders/diamond.wgsl. It's concatenated at pipeline build
-// time so sdfDiamond / hitDiamondPillIdx / diamondProxyVertex are visible to
-// the dispatch sites below (sceneSdf, fs_main, reprojectHit, vs_proxy). The
-// split keeps the dispersion/ shader bundle focused on trace + SDF framework and leaves
-// Phase B's multi-bounce TIR trace for diamond a clear home.
+// time so sdfDiamond / diamondAnalyticExit / diamondAnalyticHitScene /
+// diamondProxyVertex are visible to the dispatch sites below (sceneSdf,
+// fs_main, fs_main_diamond, vs_proxy). The split keeps the dispersion/
+// shader bundle focused on trace + SDF framework and leaves Phase B's
+// multi-bounce TIR trace for diamond a clear home.
 
 // Thick square plate as a CONSTANT-THICKNESS bent sheet. The midsurface
 // follows a sin·sin cross wave; both faces of the plate ride that midsurface

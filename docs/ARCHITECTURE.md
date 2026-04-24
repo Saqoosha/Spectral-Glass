@@ -94,7 +94,7 @@ fragment shader's rays will trace.
 | `src/hdr.ts` | Radiance .hdr (RGBE) decoder + round-trip encoder. Pure JS, no GPU dependency — tested via synthetic encode→decode round-trips. Supports the adaptive-RLE format Poly Haven ships (width 8-32767); legacy per-pixel RLE throws with a clear message. |
 | `src/envmap.ts`, `src/envmapList.ts` | HDR environment panorama loader. `envmap.ts` fetches from a URL, decodes via `hdr.ts`, converts RGB float → RGBA half-float (with an `F16_MAX_FINITE = 65504` clamp to stop bright HDR pixels from overflowing into +Inf and seeding NaN through the linear sampler), uploads to an rgba16f texture for linear-filtered IBL sampling. `envmapList.ts` curates Poly Haven CC0 HDRIs across studio / indoor / outdoor / sunset / night categories at 1K / 2K / 4K resolution and exposes a `pickRandomSlug` helper for the UI Random button. |
 | `src/shaders/dispersion/*.wgsl` | Split shader bundle (see `pipeline.ts` concat order): `frame` (uniforms + envmap sample), `sdf_primitives`, `scene` (sceneSdf aggregate), `trace` (sphere trace + analytic exits), `spectral`, `proxy` (`vs_proxy`), `fragment` (`fs_bg` / `fs_main`). Still one GPU module and one `fs_main` entry — physical split is for maintainability. |
-| `src/shaders/diamond.wgsl` | Diamond-specific geometry: sdfDiamond, `diamondAnalyticExit`, hitDiamondPillIdx, diamondProxyVertex, facet debug helpers. Concatenated between `sdf_primitives` and `scene` so `sceneSdf` can call `sdfDiamond`. |
+| `src/shaders/diamond.wgsl` | Diamond-specific geometry: sdfDiamond, `diamondAnalyticExit`, `diamondAnalyticHit` / `diamondAnalyticHitScene` (front-hit picker across instances), diamondProxyVertex, facet debug helpers. Concatenated between `sdf_primitives` and `scene` so `sceneSdf` can call `sdfDiamond`. |
 | `src/shaders/postprocess.wgsl` | Passthrough + FXAA fragment shaders. FXAA runs in perceptual (sRGB) luma for edge detection and blends color in linear space. Applies the sRGB OETF when the swapchain is non-sRGB. |
 | `src/persistence.ts` | localStorage read/write with schema versioning, field validation, legacy `taa: boolean` → `aaMode` migration, and a trailing-edge debounced saver (+ `flush()` for pagehide). |
 
@@ -320,10 +320,11 @@ Five shapes. `sceneSdf` dispatches on the `shape` uniform:
   facet class: table=red, bezel=green, star=blue, upper-half=yellow,
   girdle=cyan, lower-half=magenta, pavilion=orange) — surface coverage
   + adjacency without refraction muddying the signal. SDF code lives in
-  `src/shaders/diamond.wgsl` alongside `hitDiamondPillIdx` (TAA
-  reprojection pivot picker) and the `diamondProxyVertex` exact
-  convex-hull proxy mesh (46 triangles: 6-tri table fan + 16-tri crown
-  trapezoids + 16-tri girdle band + 8-tri pavilion cone).
+  `src/shaders/diamond.wgsl` alongside `diamondAnalyticHit` /
+  `diamondAnalyticHitScene` (analytical front-hit picker across diamond
+  instances) and the `diamondProxyVertex` exact convex-hull proxy mesh
+  (46 triangles: 6-tri table fan + 16-tri crown trapezoids + 16-tri
+  girdle band + 8-tri pavilion cone).
   Back-face exit is **analytical** (`diamondAnalyticExit`, also in
   `src/shaders/diamond.wgsl`): ray tested against all 57 unfolded facet
   planes (8 bezel + 8 star + 16 upper half + 16 lower half + 8 pavilion

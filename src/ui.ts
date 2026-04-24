@@ -452,9 +452,7 @@ export function initUi(
     // writeFrame into `frame.envmapRotation`.
     min: ENVMAP_ROTATION_MIN, max: ENVMAP_ROTATION_MAX, step: Math.PI / 180, label: 'Rotation (rad)',
   });
-  const reloadPhotoBtn  = env.addButton({ title: 'Reload photo' });
   const randomPhotoBtn  = env.addButton({ title: 'Random photo' });
-  reloadPhotoBtn.on('click', reloadPhoto);
   randomPhotoBtn.on('click', reloadPhoto);
 
   let bgSourceBinding: ReturnType<typeof env.addBinding> | null = null;
@@ -488,8 +486,6 @@ export function initUi(
     // Picsum: "Random photo" fetches a new seed (HTML underlay + GPU texture) whenever
     // HDR is off, or the background is the HTML+photo composite (even with HDR on).
     randomPhotoBtn.hidden = on && !htmlOn;
-    // Legacy "Reload" only when a lone Picsum pass would be visible (not superseded by Random).
-    reloadPhotoBtn.hidden = on || htmlOn || (!on && params.bgSource === 'photo');
     if (bgSourceBinding) {
       bgSourceBinding.hidden = false;
     }

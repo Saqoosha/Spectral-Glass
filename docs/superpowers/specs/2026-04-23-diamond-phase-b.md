@@ -79,7 +79,10 @@ instead of front-reflection stand-ins.
 ### B1. `diamondAnalyticExit(roWorld, rdWorld, pillIdx) -> CubeExit`
 
 Lives in `src/shaders/diamond.wgsl` next to `sdfDiamond` /
-`hitDiamondPillIdx` / `diamondProxyVertex`.
+`diamondAnalyticHit` / `diamondAnalyticHitScene` / `diamondProxyVertex`.
+(The old scene-wide `hitDiamondPillIdx` scan was replaced post-Phase-B by the
+flat-interpolated `ProxyFsIn.instanceIdx` dispatch from `fs_main_diamond` +
+`diamondAnalyticHitScene`.)
 
 Returns the same `CubeExit { pWorld, nBack }` struct the existing cube/plate
 analytic exits return so `backExit()` in `dispersion.wgsl` can dispatch

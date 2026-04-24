@@ -50,15 +50,21 @@ export function destroyHtmlBackgroundTexture(p: PhotoTex): void {
 
 /**
  * Call only from a canvas `paint` event handler (or the first copy may throw).
- * Copys the element subtree raster into the destination texture.
+ * Copies the element subtree raster into the destination texture.
+ *
+ * Returns `true` when the copy succeeded (or was skipped because the
+ * browser doesn't expose the API — no work to do). Returns `false` on
+ * a genuine runtime failure; callers should count consecutive failures
+ * and fall back (e.g. to the Picsum photo background) so the user isn't
+ * stuck staring at a frozen snapshot indefinitely.
  */
 export function copyHtmlLayerToTexture(
   queue: GPUQueue,
   layer: HTMLElement,
   dest:  GPUTexture,
-): void {
+): boolean {
   const copy = (queue as GPUQueue).copyElementImageToTexture;
-  if (typeof copy !== 'function') return;
+  if (typeof copy !== 'function') return true;
   const destTagged: GPUImageCopyTextureTagged = {
     texture:            dest,
     mipLevel:           0,
@@ -69,7 +75,10 @@ export function copyHtmlLayerToTexture(
   };
   try {
     copy.call(queue, layer, destTagged);
+    return true;
   } catch (err) {
-    console.warn('[html-bg] copyElementImageToTexture failed:', err);
+    // console.error (not warn) — this is a production failure, not a hint.
+    console.error('[html-bg] copyElementImageToTexture failed:', err);
+    return false;
   }
 }
