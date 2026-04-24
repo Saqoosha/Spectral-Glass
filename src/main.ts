@@ -22,15 +22,6 @@ import { loadStored, debouncedSaver } from './persistence';
 import { createPerfStats, makeFrameTimer } from './perfStats';
 import { frameFieldsFromParams } from './shapeParams';
 
-function showFatal(message: string): void {
-  const fb = document.getElementById('fallback');
-  if (fb) {
-    fb.textContent = message;
-    fb.classList.add('visible');
-  }
-  document.getElementById('gpu')?.setAttribute('style', 'display:none');
-}
-
 function isTypingTarget(t: EventTarget | null): boolean {
   if (!(t instanceof HTMLElement)) return false;
   const tag = t.tagName;
@@ -52,13 +43,38 @@ const PROJECTION_ID: Record<Params['projection'], number> = {
   perspective: 1,
 };
 
+let noticeHideTimer: number | null = null;
+let fatalFallbackActive = false;
+
+function clearNoticeHideTimer(): void {
+  if (noticeHideTimer === null) return;
+  window.clearTimeout(noticeHideTimer);
+  noticeHideTimer = null;
+}
+
+function showFatal(message: string): void {
+  fatalFallbackActive = true;
+  clearNoticeHideTimer();
+  const fb = document.getElementById('fallback');
+  if (fb) {
+    fb.textContent = message;
+    fb.classList.add('visible');
+  }
+  document.getElementById('gpu')?.setAttribute('style', 'display:none');
+}
+
 /** Non-fatal user-visible notice — e.g. photo reload failed. Auto-hides. */
 function showNotice(message: string, durationMs = 3000): void {
+  if (fatalFallbackActive) return;
   const fb = document.getElementById('fallback');
   if (!fb) return;
+  clearNoticeHideTimer();
   fb.textContent = message;
   fb.classList.add('visible');
-  window.setTimeout(() => fb.classList.remove('visible'), durationMs);
+  noticeHideTimer = window.setTimeout(() => {
+    noticeHideTimer = null;
+    if (!fatalFallbackActive) fb.classList.remove('visible');
+  }, durationMs);
 }
 
 async function main(): Promise<void> {
@@ -112,6 +128,14 @@ async function main(): Promise<void> {
     : defaultPills(initSize.width, initSize.height);
   const pillCountBeforeEnsure = pills.length;
   pills = ensurePillInstanceCount(pills, initSize.width, initSize.height);
+
+  // Scene-change flag — consumed next frame by the render loop to force a
+  // full historyBlend (1.0) so the previous scene doesn't ghost in. 2 frames
+  // covers the ping-pong double buffering: the "prev" we read from after a
+  // change is the one written before the change happened.
+  let resetHistoryFrames = 2;
+  const markSceneChanged = () => { resetHistoryFrames = 2; };
+
   // Re-attach the pointer-event drag layer with the same shape/wave callbacks.
   // Hoisted into a helper because the loop body re-creates `pills` on Space
   // (random-shuffle), so we need the same arg list at two call sites.
@@ -122,6 +146,7 @@ async function main(): Promise<void> {
     ctx.canvas, pills, ctx.dpr,
     () => SHAPE_ID[params.shape],
     () => params.shape === 'plate' ? params.shapes.plate.waveAmp : 0,
+    markSceneChanged,
   );
   let detach = makeDrag();
 
@@ -130,13 +155,6 @@ async function main(): Promise<void> {
   if (pills.length > pillCountBeforeEnsure) {
     saveDebounced.schedule(params, pills);
   }
-
-  // Scene-change flag — consumed next frame by the render loop to force a
-  // full historyBlend (1.0) so the previous scene doesn't ghost in. 2 frames
-  // covers the ping-pong double buffering: the "prev" we read from after a
-  // change is the one written before the change happened.
-  let resetHistoryFrames = 2;
-  const markSceneChanged = () => { resetHistoryFrames = 2; };
 
   /** Same Picsum image as the GPU photo texture, for the HTML-in-Canvas snapshot.
    *  Race-guarded like `reloadPhoto` — rapid Random clicks shouldn't let an older
@@ -498,6 +516,7 @@ async function main(): Promise<void> {
       if (resized !== history) {
         history = resized;
         rebuildBindGroups(ctx, pl, frameBuf, getActivePhoto(), envmapNow, history);
+        markSceneChanged();
       }
       resizeIntermediate(ctx.device, post, width, height);
 

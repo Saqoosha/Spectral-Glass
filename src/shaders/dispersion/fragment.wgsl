@@ -413,9 +413,11 @@ fn fs_main(in: ProxyFsIn) -> FsOut {
       // refracted direction; strength interpolates between rd (bg
       // direction = no refraction visible) and r2 (full refraction).
       // Photo: classic UV-offset sample.
-      let refractPhoto = textureSampleLevel(photoTex, photoSmp, uvCover, photoLod).rgb;
-      let refractEnv   = sampleEnvmap(mix(rd, r2, strength));
-      refractL = select(refractPhoto, refractEnv, frame.envmapEnabled > 0.5);
+      if (frame.envmapEnabled > 0.5) {
+        refractL = sampleEnvmap(mix(rd, r2, strength));
+      } else {
+        refractL = textureSampleLevel(photoTex, photoSmp, uvCover, photoLod).rgb;
+      }
     }
 
     // Per-wavelength Schlick Fresnel: short λ (blue) has higher IOR → higher F.
@@ -666,13 +668,13 @@ fn fs_main_diamond(in: ProxyFsIn) -> FsOut {
           let uvOffB    = uv + (outDir - rd).xy * strength;
           let uvCoverB  = coverUv(uvOffB);
           let inBoundsB = all(uvCoverB >= vec2<f32>(0.0)) && all(uvCoverB <= vec2<f32>(1.0));
-          let refractPhoto = select(
-            bg,
-            textureSampleLevel(photoTex, photoSmp, uvCoverB, photoLod).rgb,
-            inBoundsB,
-          );
-          let refractEnv = sampleEnvmap(mix(rd, outDir, strength));
-          refractL = select(refractPhoto, refractEnv, frame.envmapEnabled > 0.5);
+          if (frame.envmapEnabled > 0.5) {
+            refractL = sampleEnvmap(mix(rd, outDir, strength));
+          } else if (inBoundsB) {
+            refractL = textureSampleLevel(photoTex, photoSmp, uvCoverB, photoLod).rgb;
+          } else {
+            refractL = bg;
+          }
         } else {
           let exhaustedFallback = select(bg, reflSrc, frame.envmapEnabled > 0.5);
           let dbgTir    = vec3<f32>(1.0, 0.2, 0.75);
@@ -686,9 +688,11 @@ fn fs_main_diamond(in: ProxyFsIn) -> FsOut {
     } else if (r2NaN || r2OOB) {
       refractL = bg;
     } else {
-      let refractPhoto = textureSampleLevel(photoTex, photoSmp, uvCover, photoLod).rgb;
-      let refractEnv   = sampleEnvmap(mix(rd, r2, strength));
-      refractL = select(refractPhoto, refractEnv, frame.envmapEnabled > 0.5);
+      if (frame.envmapEnabled > 0.5) {
+        refractL = sampleEnvmap(mix(rd, r2, strength));
+      } else {
+        refractL = textureSampleLevel(photoTex, photoSmp, uvCover, photoLod).rgb;
+      }
     }
 
     let F_lambda = schlickFresnel(cosT, ior);

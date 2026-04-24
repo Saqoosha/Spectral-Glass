@@ -20,6 +20,7 @@ type Slot = {
   resolveBuf:  GPUBuffer;  // GPU-visible, QUERY_RESOLVE | COPY_SRC
   readBuf:     GPUBuffer;  // MAP_READ | COPY_DST
   inFlight:    boolean;
+  mapping:     boolean;
 };
 
 export function createPerf(device: GPUDevice): Perf {
@@ -41,6 +42,7 @@ export function createPerf(device: GPUDevice): Perf {
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     }),
     inFlight: false,
+    mapping:  false,
   }));
   let writeSlot = 0;
 
@@ -63,16 +65,30 @@ export function createPerf(device: GPUDevice): Perf {
     },
     async readMs() {
       const slot = slots[1 - writeSlot]!;  // the one we just wrote to
-      if (!slot.inFlight) return null;
-      await slot.readBuf.mapAsync(GPUMapMode.READ);
-      // Read timestamps before unmap. Avoid `getMappedRange().slice(0)` — that
-      // copied 16 B every frame and could trigger periodic GC + main-thread
-      // hitches (felt like ~1s stutters while dragging) on top of mapAsync.
-      const range = slot.readBuf.getMappedRange();
-      const view  = new BigUint64Array(range);
-      const t0    = view[0]!;
-      const t1    = view[1]!;
-      slot.readBuf.unmap();
+      if (!slot.inFlight || slot.mapping) return null;
+      slot.mapping = true;
+      let t0: bigint;
+      let t1: bigint;
+      let mapped = false;
+      try {
+        await slot.readBuf.mapAsync(GPUMapMode.READ);
+        mapped = true;
+        // Read timestamps before unmap. Avoid `getMappedRange().slice(0)` — that
+        // copied 16 B every frame and could trigger periodic GC + main-thread
+        // hitches (felt like ~1s stutters while dragging) on top of mapAsync.
+        const range = slot.readBuf.getMappedRange();
+        const view  = new BigUint64Array(range);
+        t0 = view[0]!;
+        t1 = view[1]!;
+        slot.readBuf.unmap();
+        mapped = false;
+      } catch (err) {
+        if (mapped) slot.readBuf.unmap();
+        slot.mapping  = false;
+        slot.inFlight = false;
+        throw err;
+      }
+      slot.mapping  = false;
       slot.inFlight = false;
       if (t1 < t0) return null;  // counter reset or invalid pair (rare per spec)
       return Number(t1 - t0) / 1e6;  // ns → ms

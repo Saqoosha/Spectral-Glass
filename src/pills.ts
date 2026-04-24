@@ -62,7 +62,7 @@ type DragState =
 
 /**
  * Shape IDs mirror `SHAPE_ID` in main.ts / WGSL: 0 pill, 1 prism, 2 cube,
- * 3 plate. `getShapeId` lets the drag layer tune hit testing without owning
+ * 3 plate, 4 diamond. `getShapeId` lets the drag layer tune hit testing without owning
  * render state.
  */
 export type ShapeIdFn = () => number;
@@ -76,6 +76,7 @@ export type ShapeIdFn = () => number;
  * so the drag region tracks the slider live.
  */
 export type WaveMarginFn = () => number;
+export type DragMoveFn = () => void;
 
 export function attachDrag(
   canvas: HTMLCanvasElement,
@@ -83,6 +84,7 @@ export function attachDrag(
   dpr: number,
   getShapeId: ShapeIdFn = () => 0,
   getWaveMargin: WaveMarginFn = () => 0,
+  onDragMove: DragMoveFn = () => {},
 ): () => void {
   let state: DragState = { kind: 'idle' };
 
@@ -151,8 +153,12 @@ export function attachDrag(
     const { x, y } = toWorld(e);
     const p = pills[state.pillIndex];
     if (!p) { release(e.pointerId); return; }
-    p.cx = x - state.offsetX;
-    p.cy = y - state.offsetY;
+    const nextCx = x - state.offsetX;
+    const nextCy = y - state.offsetY;
+    if (p.cx === nextCx && p.cy === nextCy) return;
+    p.cx = nextCx;
+    p.cy = nextCy;
+    onDragMove();
   };
 
   const onRelease = (e: PointerEvent) => release(e.pointerId);
