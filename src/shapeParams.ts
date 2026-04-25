@@ -80,7 +80,7 @@ export function defaultShapesParams(): ShapesParams {
   return {
     pill:    { ...DEF_BODY },
     prism:   { pillLen: 400, pillShort: 80, pillThick: 80 },
-    cube:    { ...DEF_BODY, pillLen: 300, pillShort: 300, pillThick: 300, edgeR: 30 },
+    cube:    { ...DEF_BODY, pillLen: 230, pillShort: 230, pillThick: 230, edgeR: 44 },
     plate:   { ...DEF_PLATE, pillLen: 400, pillThick: 100, edgeR: 4 },
     diamond: { ...DEF_DIAMOND },
   };

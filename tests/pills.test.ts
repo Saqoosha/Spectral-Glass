@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { attachDrag, defaultPills, ensurePillInstanceCount, DEFAULT_PILL_COUNT } from '../src/pills';
+import {
+  attachDrag,
+  defaultPills,
+  ensurePillInstanceCount,
+  setPillInstanceCount,
+  DEFAULT_PILL_COUNT,
+} from '../src/pills';
 
 describe('ensurePillInstanceCount', () => {
   it('pads a single pill up to DEFAULT_PILL_COUNT using default layout slots', () => {
@@ -23,6 +29,24 @@ describe('ensurePillInstanceCount', () => {
     const out = ensurePillInstanceCount(d, w, h);
     expect(out).toHaveLength(4);
     expect(out[0]?.cx).toBe(d[0]!.cx);
+  });
+});
+
+describe('setPillInstanceCount', () => {
+  it('trims to one pill for single-object presets', () => {
+    const d = defaultPills(800, 600);
+    const out = setPillInstanceCount(d, 800, 600, 1);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toEqual(d[0]);
+    expect(out[0]).not.toBe(d[0]);
+  });
+
+  it('pads back to four pills for multi-object presets', () => {
+    const one = [{ cx: 100, cy: 200, cz: 0, hx: 1, hy: 1, hz: 1, edgeR: 5 }];
+    const out = setPillInstanceCount(one, 800, 600, DEFAULT_PILL_COUNT);
+    expect(out).toHaveLength(DEFAULT_PILL_COUNT);
+    expect(out[0]).toEqual(one[0]);
+    expect(out[1]?.cx).toBe(defaultPills(800, 600)[1]!.cx);
   });
 });
 

@@ -1,6 +1,6 @@
 # Spectral Glass
 
-> **Live demo**: <https://saqoosha.github.io/Spectral-Glass/> (Chrome/Edge 120+ or Safari 18+)
+> **Live demo**: <https://saqoosha.github.io/Spectral-Glass/> (WebGPU: Chrome/Edge 120+ or Safari 18+. HTML-in-canvas background: Chrome with the `CanvasDrawElement` flag; otherwise the app falls back to Picsum-only.)
 
 A realtime WebGPU demo of **physically accurate spectral dispersion** through
 Apple "Liquid Glass"-style floating pills, triangular prisms, rotating cubes,
@@ -12,9 +12,12 @@ functions.
 
 ![Four glass cubes refracting the README page on a grayscale photo](docs/images/demo-default.png)
 
-Above: four rotating glass cubes (`n_d = 1.6`, `V_d = 8`, perspective FOV 60°,
-N = 16) over a composite background — this README page (live HTML, via Chrome's
-`CanvasDrawElement` trial) layered on top of a grayscale Picsum photo.
+Above: the default opening scene: four rotating glass cubes (`n_d = 1.272`,
+`V_d = 2.0`, refraction strength `0.15`, perspective FOV 45°, N = 16) over a
+composite background — this README page (live HTML, via Chrome's
+`CanvasDrawElement` trial) layered on top of a grayscale Picsum photo when the
+browser supports HTML-in-canvas, or the same Picsum photo by itself when it
+does not.
 A monochrome background lets you see the per-wavelength dispersion as pure
 spectral colors instead of mixing with the photo's own chroma — every bright
 edge of every cube is the shader splitting the composite by wavelength in
@@ -36,7 +39,8 @@ glass cube (`n_d = 1.7`, `V_d = 4`), same grayscale background photo, same
 frame — only the per-wavelength sample count and the smoothing pipeline differ.
 
 In the live demo, press and hold **`Z`** to force `N = 3`. Release to go back to
-`N = 8`. With jitter + history on, even `N = 3` looks close to `N = 8` at
+the configured sample count (the default opening scene is `N = 16`). With
+jitter + history on, even `N = 3` looks close to `N = 8` at
 typical dispersion strengths — the 3-band rainbow only shows up cleanly when
 both are off (which is what the image above captures for illustration).
 
@@ -49,7 +53,10 @@ bun run test       # Vitest on the math modules
 bun run build      # tsc --noEmit + vite build
 ```
 
-Requires a WebGPU-capable browser (Chrome / Edge 120+, Safari 18+).
+Requires a WebGPU-capable browser (Chrome / Edge 120+, Safari 18+). The
+scrollable HTML text background uses Chrome's HTML-in-canvas
+`CanvasDrawElement` path; browsers without it automatically switch the
+Background control to **Picsum only**.
 
 ## Controls
 
@@ -58,11 +65,24 @@ Requires a WebGPU-capable browser (Chrome / Edge 120+, Safari 18+).
 | Drag a shape | Move it around the canvas (cube / diamond use a circular hit radius) |
 | **`Z`** (hold) | Force `N = 3` (fake RGB dispersion) for A/B comparison |
 | **Space** | Shuffle pills to random positions |
-| **`R`** | Reload a new random Picsum photo (same as **Reload photo**; only when **HDR env** is off) |
+| **`R`** | Load a new random Picsum photo (same as **Random photo**; only when **HDR env** is off) |
 | **`T` / `S` / `B` / `F`** | Diamond view presets — **T**op (table toward camera) / **S**ide (girdle profile) / **B**ottom (culet toward camera) / **F**ree (tumble). No-op for other shapes. |
-| Tweakpane | IOR, Abbe, sample count, shape (pill / prism / cube / plate / diamond), dimensions, wave amp + wavelength (plate only), **diamond size** + view preset + **Wireframe** / **Facet color** + **TIR debug** (pink = bounce budget exhausted with refract still TIR; orange = analytic exit miss) + **TIR max bounces** 1…32 (default 6, higher = more work on TIR pixels) (diamond only), refraction strength, projection (ortho / perspective), FOV, temporal jitter, refraction mode, **Stop the world** (freeze rotation/wave while AA keeps converging), **AA** mode selector — `None` / `FXAA` (single-frame spatial filter) / `TAA` (sub-pixel jitter + motion-vector history reprojection), **Environment** — **HDR env** on: Poly Haven panorama (1K/2K/4K) + exposure + rotation + random; **off**: those hidden + **Reload photo** (Picsum background; legacy reflSrc path for reflections) |
-| Presets | Subtle pill · Strong dispersion · Prism rainbow · Rotating cube · Wavy plate |
+| Tweakpane | IOR, Abbe, sample count, shape (pill / prism / cube / plate / diamond), dimensions, wave amp + wavelength (plate only), **diamond size** + view preset + **Wireframe** / **Facet color** + **TIR debug** (pink = bounce budget exhausted with refract still TIR; orange = analytic exit miss) + **TIR max bounces** 1…32 (default 6, higher = more work on TIR pixels) (diamond only), refraction strength, projection (ortho / perspective), FOV, temporal jitter, refraction mode, **Stop the world** (freeze rotation/wave while AA keeps converging), **AA** mode selector — `None` / `FXAA` (single-frame spatial filter) / `TAA` (sub-pixel jitter + motion-vector history reprojection), **Environment** — **HDR env** on: Poly Haven panorama (1K/2K/4K) + exposure + rotation + random; **off**: those hidden + **Random photo** (Picsum background; legacy reflSrc path for reflections). In Chrome with HTML-in-canvas, **Background** switches between **Picsum only** and **Picsum + text (HTML)**. |
+| Presets | Subtle pill · Prism rainbow · Rotating cube · Wavy plate · Diamond |
 | Materials | 10 real-world glasses (water → BK7 → SF flints → diamond → moissanite) + 4 fantasy (n_d up to 3.5, V_d down to 2) |
+
+Preset values are intentionally opinionated snapshots:
+
+| Preset | Instances | Key values |
+|---|---:|---|
+| Subtle pill | 4 | `N=8`, `n_d=1.517`, `V_d=6.5`, refraction `0.035`, pill `400×115×62`, edge `100` |
+| Prism rainbow | 4 | `N=16`, `n_d=1.600`, `V_d=12`, refraction `0.155`, prism `393×149×117` |
+| Rotating cube | 4 | `N=16`, `n_d=1.272`, `V_d=2.0`, refraction `0.150`, cube `230`, edge `44` |
+| Wavy plate | 4 | `N=16`, `n_d=1.272`, `V_d=2.0`, refraction `0.200`, plate `346×346×60`, edge `10.5`, wave `17 / 535` |
+| Diamond | 1 | `N=16`, `n_d=2.418`, `V_d=55`, refraction `0.200`, size `400`, free tumble, TIR bounces `6`, Brown Studio 2 `2K`, exposure `0.75`, rotation `-1.0995` |
+
+All presets use perspective FOV 45°, Exact refraction, temporal jitter on,
+AA `None`, and history alpha `0.5`.
 
 The **Perf** panel shows **GPU ms** by default when the browser exposes WebGPU
 `timestamp-query` (if the adapter does not, the GPU line stays empty — that is
@@ -120,7 +140,10 @@ in the UI to tint every proxy fragment pink and see the rasterised silhouette.
   real chromatic fringing where they diverge.
 - **Spatial + temporal jitter.** Per-pixel wavelength phase via `hash21` so
   neighbouring pixels sample different λ — the eye and history accumulation
-  average the noise, so N=8 stratified looks like N=16 uniform.
+  average the noise, so N=8 stratified looks like N=16 uniform. Turning
+  **Temporal jitter** off now pins the spectral phase and hero wavelength, so
+  the on/off difference is visible instead of being hidden by a still-jittered
+  shader path.
 - **TIR fallback.** When `refract()` returns zero at the back face, the
   wavelength contributes the external reflection instead of dropping — no
   black holes inside the cube. For **diamond** (exact refraction only), a
@@ -145,6 +168,11 @@ in the UI to tint every proxy fragment pink and see the rasterised silhouette.
   photo can't produce. Toggleable for A/B with the legacy Picsum
   photo bg + UV-offset refraction path; exposure + yaw sliders let
   users tune without re-downloading.
+- **HTML-in-canvas background.** Chrome builds exposing
+  `GPUQueue.copyElementImageToTexture` can rasterize the scrollable DOM
+  text panel into the same texture the glass refracts. If the API is missing
+  or repeated copies fail, the app falls back to **Picsum only** while staying
+  scrollable and interactive.
 - **Temporal accumulation.** `rgba16float` ping-pong history with EMA blend
   (α = 0.2 steady-state, 1.0 for one frame after a scene change so cube
   tail doesn't ghost in). When **Stop the world** freezes the scene, the
@@ -204,9 +232,13 @@ src/
 ├── hdr.ts                      Minimal Radiance .hdr decoder (Phase C)
 ├── envmap.ts                   HDR envmap texture loader + GPU uploader
 ├── envmapList.ts               Curated Poly Haven HDRI slugs + random picker
+├── htmlBgTexture.ts            HTML-in-canvas texture copy + support checks
 ├── persistence.ts              localStorage: validated load, debounced save, pagehide flush
 ├── photo.ts                    Picsum fetch → GPU texture (w/ gradient fallback)
 ├── pills.ts                    Pill state + shape-aware pointer drag
+├── perfStats.ts                Rolling CPU/GPU HUD stats
+├── shapeParams.ts              Shape-specific params → frame fields
+├── spectralSampling.ts         Temporal-jitter / hero-wavelength field builder
 ├── ui.ts                       Tweakpane bindings (shape selector, presets, materials)
 ├── webgpu/
 │   ├── device.ts               Adapter + device + error handlers
@@ -219,7 +251,14 @@ src/
 └── shaders/
     ├── fullscreen.wgsl         Fullscreen triangle vertex shader
     ├── postprocess.wgsl        Passthrough + FXAA fragment shaders + sRGB OETF
-    ├── dispersion.wgsl         SDFs (pill/prism/cube/plate) + analytic exits + TAA reprojection + spectral dispersion fragment
+    ├── dispersion/
+    │   ├── frame.wgsl          Uniforms + envmap sampling helpers
+    │   ├── sdf_primitives.wgsl Pill/prism/cube/plate SDFs
+    │   ├── scene.wgsl          Scene SDF aggregate + shape dispatch
+    │   ├── trace.wgsl          Sphere trace + analytic exits
+    │   ├── spectral.wgsl       Cauchy IOR + CIE/Wyman spectral helpers
+    │   ├── proxy.wgsl          Instanced proxy vertex path
+    │   └── fragment.wgsl       Background + dispersion fragment shaders
     └── diamond.wgsl            Diamond-specific WGSL: `sdfDiamond` (D_8 folded),
                                  `diamondAnalyticExit` (ray-polytope back-exit
                                  used by the TIR bounce chain), wireframe + facet-
@@ -232,8 +271,8 @@ docs/
 ```
 
 Math modules in `src/math/` are mirrored 1:1 by functions in
-`src/shaders/dispersion.wgsl` and `src/shaders/diamond.wgsl` — the vitest
-suite (run `bun run test` — 160+ cases, count drifts as cases are added) acts as the
+`src/shaders/dispersion/*.wgsl` and `src/shaders/diamond.wgsl` — the vitest
+suite (run `bun run test` — currently 200 cases, count drifts as cases are added) acts as the
 reference implementation for the shader. The diamond plane coefficients
 are injected from `diamond.ts` into the shader source at pipeline build
 time so the host-side math and GPU-side constants can't drift.
@@ -244,7 +283,7 @@ time so the host-side math and GPU-side constants can't drift.
 
 ## Performance
 
-Apple Silicon (1292×1073, 4 shapes, WebGPU `timestamp-query`, p50 of ≥ 30
+Apple Silicon (1292×1073, 4 instances on screen, WebGPU `timestamp-query`, p50 of ≥ 30
 samples):
 
 | Config | GPU time |
@@ -276,8 +315,8 @@ efficiently, but discrete GPUs gain more from the proxy pass.
 
 Tech demo / proof of technique. Not a library. No production website
 integration. If you want to pull the spectral-refraction technique into your
-own project, the interesting files are `src/shaders/dispersion.wgsl` and the
-six math modules in `src/math/`.
+own project, the interesting files are `src/shaders/dispersion/`,
+`src/shaders/diamond.wgsl`, and the mirrored helpers in `src/math/`.
 
 ## Credits
 

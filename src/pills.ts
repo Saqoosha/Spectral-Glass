@@ -7,14 +7,13 @@ export type Pill = {
   edgeR: number;
 };
 
-/** Default multi-instance count — scene presets and the opening layout assume four. */
+/** Default multi-instance count — non-diamond scene presets and the opening layout assume four. */
 export const DEFAULT_PILL_COUNT = 4;
 
 /**
- * Old localStorage could persist a single drag target; the renderer always
- * supported up to `MAX_PILLS` instances. Pad with `defaultPills` layout slots
- * so we never start with a lone object unless the user explicitly deletes
- * instances (we don't expose delete — min is four for the demo).
+ * Old localStorage could persist too few drag targets; the renderer supports
+ * up to `MAX_PILLS` instances. Pad with `defaultPills` layout slots so
+ * non-diamond scenes keep their intended multi-object layout.
  */
 export function ensurePillInstanceCount(
   pills: readonly Pill[],
@@ -30,6 +29,24 @@ export function ensurePillInstanceCount(
   }
   const defaults = defaultPills(width, height);
   for (let i = copy.length; i < minCount && i < defaults.length; i++) {
+    copy.push({ ...defaults[i]! });
+  }
+  return copy;
+}
+
+export function setPillInstanceCount(
+  pills: readonly Pill[],
+  width: number,
+  height: number,
+  count: number,
+): Pill[] {
+  const target = Math.min(Math.max(1, Math.floor(count)), PILL_COUNT_CAP);
+  const copy = pills.slice(0, target).map((p) => ({ ...p }));
+  if (copy.length >= target) {
+    return copy;
+  }
+  const defaults = defaultPills(width, height);
+  for (let i = copy.length; i < target && i < defaults.length; i++) {
     copy.push({ ...defaults[i]! });
   }
   return copy;

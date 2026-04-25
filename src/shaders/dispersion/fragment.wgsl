@@ -73,6 +73,13 @@ fn proxyBgOut(uv: vec2<f32>, bg: vec3<f32>) -> FsOut {
   return out;
 }
 
+fn spectralStratumJitter(px: vec2<f32>, jitter: f32) -> f32 {
+  if (jitter < 0.0) {
+    return 0.0;
+  }
+  return hash21(px + vec2<f32>(jitter * 1000.0, frame.time * 37.0)) - 0.5;
+}
+
 // Back-face exit dispatcher. Centralises the entry-bias trick (push the
 // front-hit point one MIN_STEP inward along the refracted ray so the
 // analytic exits' slab math doesn't divide 0/0 → silent wrong-axis pick →
@@ -333,7 +340,7 @@ fn fs_main(in: ProxyFsIn) -> FsOut {
   // N=3 about a third of pixels lose their red-end sample (CMF≈0 at 720-753
   // nm), rgbWeight.b drops to zero there, and the renormaliser flips a white
   // background pixel to yellow.
-  let pxJit = hash21(px + vec2<f32>(jitter * 1000.0, frame.time * 37.0)) - 0.5;
+  let pxJit = spectralStratumJitter(px, jitter);
 
   // For each wavelength λ:
   //   1. compute per-λ IOR via Cauchy
@@ -602,7 +609,7 @@ fn fs_main_diamond(in: ProxyFsIn) -> FsOut {
 
   let cosT     = max(dot(-rd, nFront), 0.0);
   let photoLod = clamp(-log2(max(cosT, 0.02)) - 1.0, 0.0, 6.0);
-  let pxJit    = hash21(px + vec2<f32>(jitter * 1000.0, frame.time * 37.0)) - 0.5;
+  let pxJit    = spectralStratumJitter(px, jitter);
 
   var rgbAccum  = vec3<f32>(0.0);
   var rgbWeight = vec3<f32>(0.0);

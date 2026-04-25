@@ -13,7 +13,14 @@ import { createPerf } from './webgpu/perf';
 import { loadPhoto, destroyPhoto, picsumPhotoUrl } from './photo';
 import { loadEnvmap, createDefaultEnvmap, destroyEnvmap, type EnvmapTex } from './envmap';
 import { DEFAULT_ENVMAP_SLUG, envmapUrl, isKnownSlug, pickRandomSlug } from './envmapList';
-import { attachDrag, defaultPills, ensurePillInstanceCount, type Pill } from './pills';
+import {
+  attachDrag,
+  defaultPills,
+  ensurePillInstanceCount,
+  setPillInstanceCount,
+  DEFAULT_PILL_COUNT,
+  type Pill,
+} from './pills';
 import { defaultParams, initUi, mergeParams, type Params } from './ui';
 import { cameraZForFov } from './math/camera';
 import { createHistory, resizeHistory } from './webgpu/history';
@@ -21,6 +28,7 @@ import { createPostProcess, encodePost, resizeIntermediate, writePostFrame } fro
 import { loadStored, debouncedSaver } from './persistence';
 import { createPerfStats, makeFrameTimer } from './perfStats';
 import { frameFieldsFromParams } from './shapeParams';
+import { spectralSamplingFields } from './spectralSampling';
 
 function isTypingTarget(t: EventTarget | null): boolean {
   if (!(t instanceof HTMLElement)) return false;
@@ -127,7 +135,14 @@ async function main(): Promise<void> {
     ? stored.pills.map((p) => ({ ...p }))
     : defaultPills(initSize.width, initSize.height);
   const pillCountBeforeEnsure = pills.length;
-  pills = ensurePillInstanceCount(pills, initSize.width, initSize.height);
+  const targetPillCountForShape = (shape: Params['shape']): number =>
+    shape === 'diamond' ? 1 : DEFAULT_PILL_COUNT;
+  pills = setPillInstanceCount(
+    ensurePillInstanceCount(pills, initSize.width, initSize.height, targetPillCountForShape(params.shape)),
+    initSize.width,
+    initSize.height,
+    targetPillCountForShape(params.shape),
+  );
 
   // Scene-change flag — consumed next frame by the render loop to force a
   // full historyBlend (1.0) so the previous scene doesn't ghost in. 2 frames
@@ -150,9 +165,17 @@ async function main(): Promise<void> {
   );
   let detach = makeDrag();
 
+  const setScenePillCount = (count: number): void => {
+    detach();
+    const cur = resizeCanvas(ctx.canvas, ctx.dpr);
+    pills = setPillInstanceCount(pills, cur.width, cur.height, count);
+    detach = makeDrag();
+    markSceneChanged();
+  };
+
   const saveDebounced = debouncedSaver(250);
   const persist = () => saveDebounced.schedule(params, pills);
-  if (pills.length > pillCountBeforeEnsure) {
+  if (pills.length !== pillCountBeforeEnsure) {
     saveDebounced.schedule(params, pills);
   }
 
@@ -322,6 +345,7 @@ async function main(): Promise<void> {
         },
       }
       : null,
+    setScenePillCount,
   );
   paneRef = pane;
 
@@ -423,7 +447,7 @@ async function main(): Promise<void> {
       e.preventDefault();
       detach();
       const cur = resizeCanvas(ctx.canvas, ctx.dpr);
-      pills = defaultPills(cur.width, cur.height).map((p) => ({
+      pills = defaultPills(cur.width, cur.height).slice(0, targetPillCountForShape(params.shape)).map((p) => ({
         ...p,
         cx: Math.random() * cur.width,
         cy: Math.random() * cur.height,
@@ -643,10 +667,7 @@ async function main(): Promise<void> {
       if (!params.paused) { sceneTime = (sceneTime + dt) % 1e4; }
 
       const N = forceN3 ? 3 : params.sampleCount;
-      // Hero wavelength: one visible-range wavelength per frame, all pixels
-      // share it. Temporal history accumulates across hero choices, so the
-      // single-trace geometry error averages out over ~5 frames.
-      const heroLambda = 380 + Math.random() * 320;
+      const spectralSampling = spectralSamplingFields(params.temporalJitter, N);
       // cameraZ sets the ortho depth AND implicitly the perspective FOV — for
       // a full FOV of `fov` degrees to fit the canvas height, the camera must
       // sit at `cameraZForFov(fov, height)` pixels above the z=0 plane.
@@ -658,13 +679,13 @@ async function main(): Promise<void> {
         V_d:                uf.V_d,
         sampleCount:        N,
         refractionStrength: uf.refractionStrength,
-        jitter:             params.temporalJitter ? Math.random() / N : 0,
+        jitter:             spectralSampling.wavelengthJitter,
         refractionMode:     params.refractionMode === 'exact' ? 0 : 1,
         applySrgbOetf,
         shape:              SHAPE_ID[params.shape],
         time:               timeSafe,
         historyBlend,
-        heroLambda,
+        heroLambda:         spectralSampling.heroLambda,
         cameraZ,
         projection:         PROJECTION_ID[params.projection],
         debugProxy:         params.debugProxy,

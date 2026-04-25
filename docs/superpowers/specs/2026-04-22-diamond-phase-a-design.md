@@ -2,7 +2,11 @@
 
 **Goal:** Add round brilliant cut diamond as a new shape alongside pill/prism/cube/plate, reusing the existing entry-refraction + exit-refraction trace. No fire/sparkle yet — that's Phase B.
 
-**Status:** approved by user (both design sections).
+**Status:** historical Phase A design, approved by user. The current app also
+includes Phase B/production changes: analytical diamond exit, configurable TIR
+bounce chain (1-32, default 6), TIR debug, exact convex-hull proxy, fixed view
+hotkeys, and UI sync that renders one diamond instance for the diamond
+shape/preset. See `README.md` and `docs/ARCHITECTURE.md`.
 
 ---
 

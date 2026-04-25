@@ -12,13 +12,13 @@ export type FrameParams = {
   readonly V_d:                number;
   readonly sampleCount:        number;
   readonly refractionStrength: number;
-  readonly jitter:             number;
+  readonly jitter:             number;  // < 0 disables wavelength jitter; >= 0 seeds spectral strata
   readonly refractionMode:     number;
   readonly applySrgbOetf:      boolean;
   readonly shape:              number;  // 0 = pill, 1 = prism, 2 = cube, 3 = plate, 4 = diamond
   readonly time:               number;  // seconds since start. Host derives the cube/plate/diamond rotations from this; the GPU also sees it raw for the jitter hash seed.
   readonly historyBlend:       number;  // 0..1 — 0.2 steady-state, 1.0 on scene-change frames to clear stale history
-  readonly heroLambda:         number;  // [380, 700] — jittered each frame; drives hero-wavelength back-face trace
+  readonly heroLambda:         number;  // [380, 700] when jittered; fixed 540nm when temporal jitter is off
   readonly cameraZ:            number;  // distance from screen plane (z=0) to the camera, in pixels
   readonly projection:         number;  // 0 = orthographic, 1 = perspective
   readonly debugProxy:         boolean; // tint proxy fragments pink for debugging
