@@ -15,7 +15,7 @@ refraction shader only runs on fragments the proxy actually covers.
 │  3. writeFrame → uniform buffer (688 B: scalars + 6×mat3 + plate    │
 │     + diamond 32B + envmap 16B blocks + pills)                     │
 │  4. scene pass (writes → intermediate(rgba16f) + history[write]):    │
-│     a. bg sub-pass: fullscreen triangle → fs_bg (photo + history)    │
+│     a. bg sub-pass: fullscreen triangle → fs_bg (active bg + history)│
 │     b. proxy sub-pass: instanced 3D proxy mesh → fs_main             │
 │          per-fragment camera ray (ortho OR perspective)              │
 │          sphere-trace scene SDF                                      │
@@ -51,7 +51,9 @@ no per-frame bind group allocation.
 winding) scaled to `halfSize` (SDF already accounts for `edgeR`); diamond uses a
 `DIAMOND_PROXY_VERT_COUNT`-vertex exact convex hull (138 verts, 46 tris)
 synthesized from Tolkowsky constants in `diamondProxyVertex` (see
-`src/shaders/diamond.wgsl`). The draw call issues
+`src/shaders/diamond.wgsl`). Non-diamond scenes use the default four instances;
+diamond shape/preset switches trim the live instance list to one so the
+brilliant cut reads as a single object. The draw call issues
 `max(CUBE_PROXY_VERT_COUNT, DIAMOND_PROXY_VERT_COUNT)` vertices per
 instance; the `maxVerts` guard at the top of `vs_proxy` clips the upper
 range for non-diamond shapes to an off-screen degenerate position.
@@ -87,9 +89,10 @@ fragment shader's rays will trace.
 | `src/webgpu/history.ts` | Ping-pong `rgba16float` texture pair. Recreated on resize. |
 | `src/webgpu/perf.ts` | GPU timestamp-query harness (ping-ponged readback) when the adapter supports it — Tweakpane **GPU ms** by default. `?perf` on the URL adds `window._perf` sample logging. Scene pass only; FXAA post pass isn't in the HUD. |
 | `src/photo.ts` | Picsum fetch → `ImageBitmap` → GPU texture with mipmaps. Gradient fallback on fetch/decode failure (GPU-upload errors are let through to `uncapturederror` instead). `destroyPhoto` for the queue-drained cleanup path in `main.ts`. |
+| `src/htmlBgTexture.ts` | Chrome HTML-in-canvas support checks and `GPUQueue.copyElementImageToTexture` upload into a GPU texture. `main.ts` falls back to Picsum if the API is missing or repeated paint copies fail. |
 | `src/pills.ts` | Pill state (mutated by drag) + pointer-event lifecycle with a discriminated-union drag state. |
-| `src/ui.ts` | Tweakpane bindings for `Params`. |
-| `src/main.ts` | Wires everything, runs the RAF loop inside a `try/catch`, owns reload-race protection via `photoRevision`. |
+| `src/ui.ts` | Tweakpane bindings for `Params`, presets, material buttons, support-gated Background controls, and shape/preset-driven instance-count sync. |
+| `src/main.ts` | Wires everything, runs the RAF loop inside a `try/catch`, owns reload-race protection via `photoRevision`, HTML-background fallback, and shape-aware instance count (`diamond` = 1, others = 4). |
 | `src/math/{cauchy,wyman,srgb,sdfPill,sdfPrism,sdfCube,camera,cube,plate,diamond,diamondExit}.ts` | Pure functions mirrored by the WGSL of the same name. The vitest suite is the reference. `cube.ts` / `plate.ts` / `diamond.ts` precompute the tumble rotations (rz·rx for cube, rx·ry for plate, Rx·Ry for diamond) on the host so the shader avoids per-SDF-eval cos/sin. `diamond.ts` also generates a WGSL `const` block containing its Tolkowsky-derived facet plane coefficients AND the unfolded normal arrays the analytical exit iterates over — single source of truth. `diamondExit.ts` mirrors the ray-polytope analytical exit so its behaviour can be pinned by a vitest regression without GPU access. |
 | `src/hdr.ts` | Radiance .hdr (RGBE) decoder + round-trip encoder. Pure JS, no GPU dependency — tested via synthetic encode→decode round-trips. Supports the adaptive-RLE format Poly Haven ships (width 8-32767); legacy per-pixel RLE throws with a clear message. |
 | `src/envmap.ts`, `src/envmapList.ts` | HDR environment panorama loader. `envmap.ts` fetches from a URL, decodes via `hdr.ts`, converts RGB float → RGBA half-float (with an `F16_MAX_FINITE = 65504` clamp to stop bright HDR pixels from overflowing into +Inf and seeding NaN through the linear sampler), uploads to an rgba16f texture for linear-filtered IBL sampling. `envmapList.ts` curates Poly Haven CC0 HDRIs across studio / indoor / outdoor / sunset / night categories at 1K / 2K / 4K resolution and exposes a `pickRandomSlug` helper for the UI Random button. |
@@ -129,6 +132,8 @@ block + 8 × 32 B pills).
 Uniform size is fixed — pills beyond `pillCount` are zeros.
 
 - `shape` selects the SDF (0=pill, 1=prism, 2=cube, 3=plate, 4=diamond).
+- `pillCount` gates the instance loop. UI shape changes and preset clicks keep
+  it exact: `diamond` uses one instance, all other scene presets use four.
 - `time` is the noise stream — wall-clock seconds, always advancing so TAA
   jitter and wavelength stratification keep decorrelating across frames
   even while the scene is paused.
@@ -172,9 +177,11 @@ Uniform size is fixed — pills beyond `pillCount` are zeros.
   derivation in `src/webgpu/uniforms.ts`. Defaults give ≈ 0.92 vs the
   older hardcoded 0.6 — ~53 % more progress per step at the same safety
   margin.
-- `historyBlend` is 0.2 in steady state and 1.0 for one frame after a scene
-  change (preset click, photo reload, shape switch, pill shuffle, pause
-  toggle) so stale temporal history doesn't ghost in. Switches to
+- `historyBlend` defaults to the **History α** slider (currently `0.5` in
+  `defaultParams()` and every preset; user-tunable in the Misc folder) for
+  steady state, and 1.0 for one frame after a scene change (preset click,
+  photo reload, shape switch, pill shuffle, pause toggle) so stale temporal
+  history doesn't ghost in. Switches to
   progressive averaging `α = max(1/n, 1/256)` while "Stop the world" is
   on — noise drops as 1/√n in the convergence ramp and bottoms out at a
   256-sample sliding window (~6 % residual). The 1/256 floor is required
@@ -185,7 +192,10 @@ Uniform size is fixed — pills beyond `pillCount` are zeros.
   several minutes of pause. See `main.ts pausedFrames` for the full
   derivation.
 - `heroLambda` is a frame-jittered wavelength in [380, 700] — used by Approx
-  mode for the one shared back-face trace.
+  mode for the one shared back-face trace. `spectralSamplingFields()` pins it
+  to 540 nm and writes `jitter = -1` when **Temporal jitter** is off; the WGSL
+  treats negative jitter as "use the centre of each spectral stratum" so the
+  toggle produces a stable, visible A/B state.
 - `cameraZ` / `projection` drive ortho vs perspective (CPU derives `cameraZ`
   from the UI's FOV and canvas height).
 - `debugProxy` tints every proxy fragment pink for visual inspection.
@@ -337,6 +347,8 @@ Five shapes. `sceneSdf` dispatches on the `shape` uniform:
   brilliant-cut sparkle uses meaningful paths. The chain is exact-mode
   only — approx mode’s shared hero-wavelength exit would flicker with
   `heroLambda` jitter, so approx keeps Phase A’s `reflSrc` TIR fallback.
+  Runtime shape/preset sync intentionally renders a single diamond instance;
+  pill/prism/cube/plate keep the four-instance layout.
 
 Sphere trace starts from a per-pixel ray origin and direction (see Camera
 above), marches with `HIT_EPS = 0.25` and `MIN_STEP = 0.5`. For pill and
@@ -458,7 +470,7 @@ Apple Silicon.
 
 ## Testing
 
-Math modules and uniform wiring are unit-tested (160+ tests, all pass — exact
+Math modules and uniform wiring are unit-tested (currently 200 tests, all pass — exact
 count drifts with each new case, see `bun run test`):
 
 - `cauchyIor` at d-line, monotonicity, `V_d` sensitivity, 1.0 clamp.
@@ -475,6 +487,7 @@ count drifts with each new case, see `bun run test`):
 - Diamond analytical exit (`diamondAnalyticExit` JS mirror) — axis-aligned rays exit through the culet / table with the expected class and normal, horizontal rays at z=0 exit through the girdle cylinder, rays slightly above/below the girdle band exit through a crown/pavilion facet (band-rejection test), exit normal always satisfies `dot(n, rd) > 0` (ray leaves the half-space), exit point satisfies the reported facet's plane equation (consistency between which-class and what-point), vertical rays still find the table cap when the cylinder's `a > 1e-6` guard fires.
 - Diamond view presets — `top` preserves local +Z as world +Z, `side` rotates local +Z to world +Y, `bottom` rotates it to world -Z; all three preserve vector length (orthonormal).
 - `uniform layout drift detector` parses the WGSL `struct Frame` declaration and pins the field set + order (including `diamondRot` / `diamondRotPrev` / the diamond 32B params block) so anyone editing it gets nudged to update `src/webgpu/uniforms.ts` too.
+- Spectral sampling fields — temporal jitter on writes random jitter + hero wavelength; off writes the negative-jitter sentinel and fixed 540 nm hero wavelength used by WGSL.
 
 WGSL versions are hand-mirrored by the corresponding TS module; the TS tests
 act as the reference. Shader correctness beyond that is verified visually —
@@ -484,7 +497,7 @@ no automated GPU tests.
 
 Measured on Apple Silicon (Metal 3) via WebGPU `timestamp-query` (`?perf=1`
 URL flag exposes `window._perf.samples`). Numbers below are p50 over ≥ 30
-samples at 1292×1073 with 4 shapes on screen:
+samples at 1292×1073 with 4 instances on screen (diamond preset intentionally uses 1):
 
 | Config | GPU time |
 |---|---:|

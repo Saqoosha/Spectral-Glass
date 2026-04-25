@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { attachDrag, defaultPills, ensurePillInstanceCount, DEFAULT_PILL_COUNT } from '../src/pills';
+import {
+  attachDrag,
+  defaultPills,
+  ensurePillInstanceCount,
+  setPillInstanceCount,
+  DEFAULT_PILL_COUNT,
+} from '../src/pills';
 
 describe('ensurePillInstanceCount', () => {
   it('pads a single pill up to DEFAULT_PILL_COUNT using default layout slots', () => {
@@ -23,6 +29,63 @@ describe('ensurePillInstanceCount', () => {
     const out = ensurePillInstanceCount(d, w, h);
     expect(out).toHaveLength(4);
     expect(out[0]?.cx).toBe(d[0]!.cx);
+  });
+});
+
+describe('setPillInstanceCount', () => {
+  it('trims to one pill for single-object presets', () => {
+    const d = defaultPills(800, 600);
+    const out = setPillInstanceCount(d, 800, 600, 1);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toEqual(d[0]);
+    expect(out[0]).not.toBe(d[0]);
+  });
+
+  it('pads back to four pills for multi-object presets and clones defaults', () => {
+    const one = [{ cx: 100, cy: 200, cz: 0, hx: 1, hy: 1, hz: 1, edgeR: 5 }];
+    const out = setPillInstanceCount(one, 800, 600, DEFAULT_PILL_COUNT);
+    expect(out).toHaveLength(DEFAULT_PILL_COUNT);
+    expect(out[0]).toEqual(one[0]);
+    const baseline = defaultPills(800, 600);
+    expect(out[1]?.cx).toBe(baseline[1]!.cx);
+    // Mutating the padded entry must NOT bleed back into a fresh defaultPills layout.
+    out[1]!.cx = -999;
+    expect(defaultPills(800, 600)[1]!.cx).toBe(baseline[1]!.cx);
+  });
+
+  it('clamps non-positive, fractional, oversized, and non-finite counts into [1, MAX_PILLS]', () => {
+    const d = defaultPills(800, 600);
+    expect(setPillInstanceCount(d, 800, 600, 0)).toHaveLength(1);
+    expect(setPillInstanceCount(d, 800, 600, -3)).toHaveLength(1);
+    expect(setPillInstanceCount(d, 800, 600, 4.7)).toHaveLength(4);
+    // 99 clamps to MAX_PILLS=8; defaults.length=4 so the pad cycles.
+    expect(setPillInstanceCount(d, 800, 600, 99)).toHaveLength(8);
+    expect(setPillInstanceCount(d, 800, 600, Number.NaN)).toHaveLength(1);
+  });
+});
+
+describe('ensurePillInstanceCount overflow', () => {
+  it('truncates to MAX_PILLS when given more than the renderer can address', () => {
+    const seed = { cx: 0, cy: 0, cz: 0, hx: 1, hy: 1, hz: 1, edgeR: 0 };
+    const oversized = Array.from({ length: 20 }, () => ({ ...seed }));
+    const out = ensurePillInstanceCount(oversized, 800, 600);
+    expect(out).toHaveLength(8);
+  });
+
+  it('cycles through the layout template when minCount exceeds defaults.length', () => {
+    const seed = [{ cx: 7, cy: 8, cz: 0, hx: 1, hy: 1, hz: 1, edgeR: 0 }];
+    const out = ensurePillInstanceCount(seed, 800, 600, 7);
+    expect(out).toHaveLength(7);
+    expect(out[0]?.cx).toBe(seed[0]!.cx);
+    const baseline = defaultPills(800, 600);
+    // Padded entries (1..6) wrap through the 4-slot template (idx 1,2,3,0,1,2).
+    const expectIdx = (entry: number, defaultsIdx: number) => {
+      expect(out[entry]?.cx).toBe(baseline[defaultsIdx]!.cx);
+      expect(out[entry]?.cy).toBe(baseline[defaultsIdx]!.cy);
+    };
+    expectIdx(1, 1);
+    expectIdx(4, 0);
+    expectIdx(6, 2);
   });
 });
 

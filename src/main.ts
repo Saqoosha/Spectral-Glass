@@ -13,7 +13,14 @@ import { createPerf } from './webgpu/perf';
 import { loadPhoto, destroyPhoto, picsumPhotoUrl } from './photo';
 import { loadEnvmap, createDefaultEnvmap, destroyEnvmap, type EnvmapTex } from './envmap';
 import { DEFAULT_ENVMAP_SLUG, envmapUrl, isKnownSlug, pickRandomSlug } from './envmapList';
-import { attachDrag, defaultPills, ensurePillInstanceCount, type Pill } from './pills';
+import {
+  attachDrag,
+  defaultPills,
+  ensurePillInstanceCount,
+  setPillInstanceCount,
+  pillCountForShape,
+  type Pill,
+} from './pills';
 import { defaultParams, initUi, mergeParams, type Params } from './ui';
 import { cameraZForFov } from './math/camera';
 import { createHistory, resizeHistory } from './webgpu/history';
@@ -21,6 +28,7 @@ import { createPostProcess, encodePost, resizeIntermediate, writePostFrame } fro
 import { loadStored, debouncedSaver } from './persistence';
 import { createPerfStats, makeFrameTimer } from './perfStats';
 import { frameFieldsFromParams } from './shapeParams';
+import { spectralSamplingFields } from './spectralSampling';
 
 function isTypingTarget(t: EventTarget | null): boolean {
   if (!(t instanceof HTMLElement)) return false;
@@ -127,7 +135,19 @@ async function main(): Promise<void> {
     ? stored.pills.map((p) => ({ ...p }))
     : defaultPills(initSize.width, initSize.height);
   const pillCountBeforeEnsure = pills.length;
-  pills = ensurePillInstanceCount(pills, initSize.width, initSize.height);
+  // Two-step boot reconciliation: `ensurePillInstanceCount` enforces the
+  // FLOOR (so we never start with a lone pill from old localStorage), then
+  // `setPillInstanceCount` enforces the EXACT shape-driven count (1 for
+  // diamond, 4 for the rest, via the shared `pillCountForShape`). Composing
+  // the two keeps the persistence path's "don't lose user state" semantics
+  // while still letting the diamond preset open with a single instance.
+  const bootPillCount = pillCountForShape(params.shape);
+  pills = setPillInstanceCount(
+    ensurePillInstanceCount(pills, initSize.width, initSize.height, bootPillCount),
+    initSize.width,
+    initSize.height,
+    bootPillCount,
+  );
 
   // Scene-change flag — consumed next frame by the render loop to force a
   // full historyBlend (1.0) so the previous scene doesn't ghost in. 2 frames
@@ -150,9 +170,17 @@ async function main(): Promise<void> {
   );
   let detach = makeDrag();
 
+  const setScenePillCount = (count: number): void => {
+    detach();
+    const cur = resizeCanvas(ctx.canvas, ctx.dpr);
+    pills = setPillInstanceCount(pills, cur.width, cur.height, count);
+    detach = makeDrag();
+    markSceneChanged();
+  };
+
   const saveDebounced = debouncedSaver(250);
   const persist = () => saveDebounced.schedule(params, pills);
-  if (pills.length > pillCountBeforeEnsure) {
+  if (pills.length !== pillCountBeforeEnsure) {
     saveDebounced.schedule(params, pills);
   }
 
@@ -311,17 +339,8 @@ async function main(): Promise<void> {
       // closure and flips on the first successful fetch.
       if (!envmapRealLoaded) void reloadEnvmap(params.envmapSlug);
     },
-    htmlInCanvasReady
-      ? {
-        supported: true,
-        focusEditor: () => {
-          if (!(htmlBgForeground instanceof HTMLElement)) return;
-          htmlBgForeground.classList.add('html-bg--editing');
-          htmlBgForeground.tabIndex = 0;
-          htmlBgForeground.focus();
-        },
-      }
-      : null,
+    htmlInCanvasReady ? { supported: true } : null,
+    setScenePillCount,
   );
   paneRef = pane;
 
@@ -353,10 +372,6 @@ async function main(): Promise<void> {
     ctx.canvas.addEventListener('paint', onPaint);
     if (htmlBgForeground instanceof HTMLElement) {
       htmlBgForeground.addEventListener('input', () => { ctx.canvas.requestPaint?.(); });
-      htmlBgForeground.addEventListener('blur', () => {
-        htmlBgForeground.classList.remove('html-bg--editing');
-        htmlBgForeground.tabIndex = -1;
-      });
     }
     new ResizeObserver(() => {
       if (params.bgSource === 'html') ctx.canvas.requestPaint?.();
@@ -423,7 +438,10 @@ async function main(): Promise<void> {
       e.preventDefault();
       detach();
       const cur = resizeCanvas(ctx.canvas, ctx.dpr);
-      pills = defaultPills(cur.width, cur.height).map((p) => ({
+      // Shuffle just the visible count — diamond stays single-instance even
+      // after Space, otherwise the preset's 1-instance rule would drift on
+      // the first random shuffle.
+      pills = defaultPills(cur.width, cur.height).slice(0, pillCountForShape(params.shape)).map((p) => ({
         ...p,
         cx: Math.random() * cur.width,
         cy: Math.random() * cur.height,
@@ -433,7 +451,7 @@ async function main(): Promise<void> {
       persist();
     }
     if (k === 'r' && !params.envmapEnabled) {
-      void reloadPhoto(); /* markSceneChanged on success — same as Reload photo (hidden when HDR env on) */
+      void reloadPhoto(); /* markSceneChanged on success — same as the Random photo button (hidden when HDR env on) */
     }
     if (k === 'h') {
       const panes = document.querySelectorAll<HTMLElement>('.tp-dfwv');
@@ -643,10 +661,7 @@ async function main(): Promise<void> {
       if (!params.paused) { sceneTime = (sceneTime + dt) % 1e4; }
 
       const N = forceN3 ? 3 : params.sampleCount;
-      // Hero wavelength: one visible-range wavelength per frame, all pixels
-      // share it. Temporal history accumulates across hero choices, so the
-      // single-trace geometry error averages out over ~5 frames.
-      const heroLambda = 380 + Math.random() * 320;
+      const spectralSampling = spectralSamplingFields(params.temporalJitter, N);
       // cameraZ sets the ortho depth AND implicitly the perspective FOV — for
       // a full FOV of `fov` degrees to fit the canvas height, the camera must
       // sit at `cameraZForFov(fov, height)` pixels above the z=0 plane.
@@ -658,13 +673,13 @@ async function main(): Promise<void> {
         V_d:                uf.V_d,
         sampleCount:        N,
         refractionStrength: uf.refractionStrength,
-        jitter:             params.temporalJitter ? Math.random() / N : 0,
+        jitter:             spectralSampling.wavelengthJitter,
         refractionMode:     params.refractionMode === 'exact' ? 0 : 1,
         applySrgbOetf,
         shape:              SHAPE_ID[params.shape],
         time:               timeSafe,
         historyBlend,
-        heroLambda,
+        heroLambda:         spectralSampling.heroLambda,
         cameraZ,
         projection:         PROJECTION_ID[params.projection],
         debugProxy:         params.debugProxy,

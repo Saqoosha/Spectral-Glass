@@ -24,14 +24,14 @@ struct Frame {
   V_d:                f32,
   sampleCount:        f32,
   refractionStrength: f32,
-  jitter:             f32,
+  jitter:             f32,  // < 0 disables wavelength jitter; >= 0 seeds per-pixel/per-frame spectral strata
   refractionMode:     f32,
   pillCount:          f32,
   applySrgbOetf:      f32,  // unused by this shader (sRGB encoding moved to postprocess.wgsl). Slot is kept so the Frame UBO layout stays stable — host still writes 0/1 (uniforms.ts) and tests/uniformsLayout.test.ts pins the name. Reclaiming it means touching all three together.
   shape:              f32,  // 0 = pill (stadium), 1 = prism, 2 = cube (rotates), 3 = plate (wavy, tumbles), 4 = diamond (round brilliant, rotates)
-  time:               f32,  // wall-clock seconds since start (always advancing, even while paused). Drives the noise streams: TAA sub-pixel jitter and per-pixel wavelength stratification. Rotation matrices are derived from `sceneTime` (below), NOT from this field — see `cubeRot` / `plateRot` / `diamondRot` and the time-stream split in src/main.ts.
+  time:               f32,  // wall-clock seconds since start (always advancing, even while paused). Drives the noise streams: TAA sub-pixel jitter and per-pixel wavelength stratification (the latter only when `jitter >= 0`; the sentinel branch in `spectralStratumJitter` skips the time-seeded hash). Rotation matrices are derived from `sceneTime` (below), NOT from this field — see `cubeRot` / `plateRot` / `diamondRot` and the time-stream split in src/main.ts.
   historyBlend:       f32,  // 0.2 steady state, 1.0 when the scene changed this frame
-  heroLambda:         f32,  // jittered each frame in [380,700]; Hero mode uses this
+  heroLambda:         f32,  // jittered each frame in [380,700], or fixed 540nm when temporal jitter is off
   cameraZ:            f32,  // distance from screen plane (z=0) to camera, in pixels
   projection:         f32,  // 0 = orthographic, 1 = perspective
   debugProxy:         f32,  // 1 = tint every proxy fragment pink (debug view)

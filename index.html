@@ -58,8 +58,8 @@
         top: 0; left: 0; bottom: 0; right: auto;
         z-index: 1;
         box-sizing: border-box;
-        width: min(100%, 48rem);
-        max-width: 72vw;
+        width: min(100%, 56rem);
+        max-width: 78vw;
         margin: 0;
         border: 0;
         padding: max(14px, 2.4vmin) max(20px, 2.6vmin) max(24px, 4vmin) max(18px, 2.4vmin);
@@ -70,7 +70,8 @@
         overflow-y: auto;
         overflow-x: hidden;
         overscroll-behavior: contain;
-        scrollbar-gutter: stable;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
         -webkit-overflow-scrolling: touch;
         outline: none;
         color: #f4f0e8;
@@ -85,6 +86,11 @@
           rgba(0, 0, 0, 0) 100%
         );
         border-radius: 0 6px 6px 0;
+      }
+      #html-bg-foreground::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       #html-bg-foreground .html-t-hero {
         margin: 0 0 0.1em;
@@ -164,10 +170,6 @@
         letter-spacing: 0.04em;
         color: rgba(255,255,255,0.55);
       }
-      #html-bg-foreground.html-bg--editing {
-        box-shadow: inset 0 0 0 1px rgba(122, 184, 255, 0.4);
-        border-radius: 0 5px 5px 0;
-      }
       #fallback { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; text-align: center; padding: 2rem; font-size: 1.1rem; line-height: 1.6; z-index: 10; }
       #fallback.visible { display: flex; }
     </style>
@@ -179,43 +181,41 @@
         <div
           id="html-bg-foreground"
           class="html-bg-foreground"
-          contenteditable="true"
-          spellcheck="false"
-          tabindex="-1"
-          title="Left column — Tweakpane uses the right. Scroll with wheel. Edit via “Edit text…”. Drag glass in the open area to the right."
+          title="Left column — Tweakpane uses the right. Scroll with wheel. Drag glass in the open area to the right."
         >
           <h1 class="html-t-hero">Spectral glass</h1>
-          <p class="html-t-mono">README · WebGPU · spectral dispersion</p>
+          <p class="html-t-mono">WebGPU · spectral dispersion · live HTML background</p>
 
           <h2 class="html-t-h3">What this is</h2>
           <p class="html-t-lead">
             Realtime <strong>physically accurate spectral dispersion</strong> through Apple “Liquid Glass”-style
-            floating pills, prisms, tumbling wavy plates, and round brilliant cut diamonds. This samples the
+            pills, prisms, rotating cubes, wavy plates, and a single brilliant-cut diamond. This samples the
             <strong>full visible spectrum</strong> per wavelength and reconstructs colour with
             <strong>CIE 1931</strong> colour-matching — not the usual “shift R/G/B IORs” trick.
           </p>
-          <p class="html-t-credit">Live: saqoosha.github.io/Spectral-Glass/ · Chrome/Edge 120+ or Safari 18+</p>
+          <p class="html-t-credit">Live: saqoosha.github.io/Spectral-Glass/ · WebGPU in Chrome/Edge/Safari · HTML text background in Chrome with CanvasDrawElement</p>
 
           <h2 class="html-t-h3">Why not just shift R/G/B?</h2>
           <p class="html-t-body">
             A 3-sample RGB IOR looks like a <em>three-band</em> rainbow. Real glass is a continuous spectrum.
-            Strong dispersion shows the difference: 3-band fringing on every edge vs a continuous rainbow.
-            In the app, <strong>hold Z</strong> to force <code>N = 3</code> and compare to your sample count.
+            The default scene uses <code>N = 16</code>; <strong>hold Z</strong> to force <code>N = 3</code>
+            and compare fake RGB bands against the spectral reconstruction.
           </p>
 
           <h2 class="html-t-h3">Controls (from README)</h2>
           <ul class="html-t-list">
             <li><strong>Drag</strong> a shape — move it (cube / diamond: circular hit radius)</li>
             <li><strong>Z</strong> (hold) — force N = 3 (fake RGB) for A/B</li>
-            <li><strong>Space</strong> — random pill positions</li>
-            <li><strong>R</strong> — new Picsum (when HDR env is off, same as Reload photo)</li>
+            <li><strong>Space</strong> — random positions (four non-diamonds, one diamond)</li>
+            <li><strong>R</strong> — new Picsum (when HDR env is off, same as Random photo)</li>
             <li><strong>T / S / B / F</strong> — diamond view presets (diamond only)</li>
-            <li><strong>Tweakpane</strong> — IOR, Abbe, samples, shape, materials, env, AA…</li>
+            <li><strong>Tweakpane</strong> — IOR, Abbe, samples, shape, background, materials, env, AA…</li>
           </ul>
 
           <h2 class="html-t-h3">Presets &amp; materials</h2>
           <p class="html-t-body">
-            <strong>Presets</strong> — Subtle pill, Strong dispersion, Prism rainbow, Rotating cube, Wavy plate.
+            <strong>Presets</strong> — Subtle pill, Prism rainbow, Rotating cube, Wavy plate, Diamond.
+            Diamond intentionally shows <strong>one</strong> stone; the other presets keep four objects.
             <strong>Materials</strong> — Real catalog from water / BK7 / flints / diamond / moissanite to fantasy
             glasses (high <em>n</em><sub>d</sub>, low <em>V</em><sub>d</sub>) for extreme fire.
           </p>
@@ -224,7 +224,7 @@
           <p class="html-t-body">
             Optional <strong>HDR env</strong> (Poly Haven CC0): background, refracted rays, and reflections sample the
             same linear panorama — exposure + yaw without re-downloading. Legacy path: Picsum background with
-            UV-offset reflection hack when env is off.
+            UV-offset reflection hack when env is off. The Diamond preset loads Brown Studio 2 at 2K.
           </p>
 
           <h2 class="html-t-h3">Antialiasing</h2>
@@ -250,13 +250,13 @@
 bun run dev     # http://localhost:5173
 bun run test
 bun run build</code>
-          <p class="html-t-body">Requires a WebGPU-capable browser. HTML background: Chromium + <strong>CanvasDrawElement</strong> flag. This strip is on the <strong>left</strong> (wide, over the photo) so the Tweakpane inspector can stay on the <strong>right</strong> — drag and orbit glass in the open area in the middle and to the right.</p>
+          <p class="html-t-body">Requires a WebGPU-capable browser. HTML background: Chrome + <strong>CanvasDrawElement</strong> flag; unsupported browsers automatically choose <strong>Picsum only</strong>. This strip is on the <strong>left</strong> (wide, over the photo) so the Tweakpane inspector can stay on the <strong>right</strong> — drag and orbit glass in the open area in the middle and to the right.</p>
 
           <h2 class="html-t-h3">Pipeline in short</h2>
           <ul class="html-t-list tight">
             <li>Two passes: cheap fullscreen <strong>bg + history</strong>, then instanced 3D proxy; heavy refraction only inside the silhouette.</li>
             <li>Five SDF families: pill, prism, rounded cube, wavy plate, 58-facet Tolkowsky <strong>diamond</strong> with analytic exits + TIR chain.</li>
-            <li>Cauchy + Abbe (glTF dispersion), Wyman CIE XYZ, per-λ Fresnel, per-λ sRGB weighting, jitter + TAA/FXAA, HDR env optional.</li>
+            <li>Cauchy + Abbe (glTF dispersion), Wyman CIE XYZ, per-λ Fresnel, per-λ sRGB weighting, fixed-or-jittered spectral sampling, TAA/FXAA, HDR env optional.</li>
             <li>Photo mipmaps, temporal history (EMA + paused progressive mean), reprojection for rotating shapes.</li>
           </ul>
           <p class="html-t-body">
@@ -266,7 +266,7 @@ bun run build</code>
 
           <h2 class="html-t-h3">GPU time (README sample)</h2>
           <p class="html-t-body">
-            On Apple Silicon ~1290×1070, 4 shapes, p50: pill <code>N=8</code> ≈1.7&nbsp;ms, <code>N=32</code> ≈6.4&nbsp;ms;
+            On Apple Silicon ~1290×1070, four instances, p50: pill <code>N=8</code> ≈1.7&nbsp;ms, <code>N=32</code> ≈6.4&nbsp;ms;
             cube <code>N=8</code> ≈1.05&nbsp;ms, <code>N=64</code> ≈3.2&nbsp;ms — inside a 16.67&nbsp;ms frame. Background
             pixels are cheap; the per-λ loop dominates in the proxy silhouette.
           </p>
@@ -282,9 +282,9 @@ bun run build</code>
           <p class="html-t-body">
             The Picsum underlay is the <strong>same image</strong> the GPU fetches. This wide, scrollable
             <strong>left</strong> strip (with a long fade) keeps Tweakpane’s space on the right. For
-            <strong>HTML + CanvasDrawElement</strong>, the DOM is rasterized into a texture each paint — you’re
-            reading that composite here. Scroll with the <strong>wheel</strong>; <strong>Edit text…</strong> in the
-            inspector to change copy; click the open canvas to drag glass again.
+            <strong>HTML + CanvasDrawElement</strong>, the DOM is rasterised into a texture each paint — you’re
+            reading that composite here. If the copy API is missing or fails, the app switches back to
+            <strong>Picsum only</strong>. Scroll with the <strong>wheel</strong>; click the open canvas to drag glass again.
           </p>
         </div>
       </div>

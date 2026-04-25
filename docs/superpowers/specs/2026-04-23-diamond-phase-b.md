@@ -7,7 +7,11 @@
 > **configurable** max internal bounce count (`diamondTirMaxBounces`, 1…32,
 > default 6), a **scaled/clamped** bounce-origin nudge, `diamondAnalyticExit`
 > miss handling, and **TIR debug** tints (pink = chain exhaust / still TIR;
-> orange = analytic miss). See `README.md` and `docs/ARCHITECTURE.md`.
+> orange = analytic miss). The live UI also renders diamond as one instance
+> instead of the four-instance non-diamond layout, and the Diamond preset uses
+> `N=16`, `n_d=2.418`, `V_d=55`, size `400`, Brown Studio 2 `2K`, exposure
+> `0.75`, rotation `-1.0995`, and Picsum+HTML background when supported.
+> See `README.md` and `docs/ARCHITECTURE.md`.
 
 **Spec revisions**:
 - 2026-04-23: extended bounce budget from 1 to 2 after observing that the

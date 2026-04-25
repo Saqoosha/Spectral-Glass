@@ -4,6 +4,14 @@
 
 **Goal:** Build a realtime WebGPU demo that renders Apple "Liquid Glass"-style 3D floating pills with physically accurate wavelength-dependent refraction over a random Picsum photo background.
 
+> **Historical plan note (2026-04-25):** this was the original implementation
+> plan for the seed demo. The live repository is now `Spectral-Glass`, not
+> `RealRefraction`, and the implementation has evolved beyond this plan:
+> proxy-mesh two-pass rendering, five shape families, HDR environment maps,
+> HTML-in-canvas text background with Picsum fallback, FXAA/TAA, persistence,
+> material/preset catalogs, and diamond-specific analytical exit + TIR. Current
+> behavior is documented in `README.md` and `docs/ARCHITECTURE.md`.
+
 **Architecture:** One fullscreen fragment pass. Pills are rendered via sphere-traced 3D SDFs (stadium from top, rounded slab from side). Refraction samples the background photo per wavelength, sums against the Wyman-Sloan-Shirley CIE XYZ approximation, and converts to sRGB. Tweakpane drives live parameter tuning; dragging pills updates a GPU uniform buffer each frame.
 
 **Tech Stack:** WebGPU + WGSL, TypeScript (strict), Vite + bun, Tweakpane v4, Vitest (unit tests for math modules).
@@ -1932,7 +1940,7 @@ export function initUi(params: Params, reloadPhoto: () => void): Pane {
 
   const misc = pane.addFolder({ title: 'Misc' });
   misc.addBinding(params, 'refractionStrength', { min: 0, max: 0.5, step: 0.001, label: 'Refraction' });
-  const reload = misc.addButton({ title: 'Reload photo' });
+  const reload = misc.addButton({ title: 'Random photo' });
   reload.on('click', reloadPhoto);
 
   return pane;
@@ -2035,7 +2043,7 @@ Import `rebuildBindGroup`.
 bun run dev
 ```
 
-Expected: Tweakpane panel top-right. Adjust `V_d` → rainbow widens as it drops. Adjust `edgeR` toward `thickness` → dome forms, dispersion fills the pill. Reload photo → new image, pills still visible. Stop server.
+Expected: Tweakpane panel top-right. Adjust `V_d` → rainbow widens as it drops. Adjust `edgeR` toward `thickness` → dome forms, dispersion fills the pill. Random photo → new image, pills still visible. Stop server.
 
 - [ ] **Step 5: `[COMMIT POINT]` Ask user before committing.**
 

@@ -3,6 +3,7 @@ import type { PerfStats } from './perfStats';
 import { DIAMOND_SIZE_MIN, DIAMOND_SIZE_MAX, type DiamondView } from './math/diamond';
 import { ENVMAPS, DEFAULT_ENVMAP_SLUG, DEFAULT_ENVMAP_SIZE, ENVMAP_SIZES, type EnvmapSize } from './envmapList';
 import { defaultShapesParams, mergePrismDims, type ShapesParams } from './shapeParams';
+import { pillCountForShape } from './pills';
 export type { ShapesParams, CommonBodyParams, PlateShapeParams, DiamondShapeParams, PrismBodyParams } from './shapeParams';
 
 /** Bounds for the envmap exposure slider. Exposed so `persistence.ts`
@@ -146,7 +147,7 @@ export type Params = {
 // (see @tweakpane/core `ListParamsOptions` / `ArrayStyleListOptions`).
 const SAMPLE_COUNT_PANE_OPTIONS: { text: string; value: Params['sampleCount'] }[] = [
   { text: '3 (fake RGB)', value: 3 },
-  { text: '8 (default)', value: 8 },
+  { text: '8', value: 8 },
   { text: '16', value: 16 },
   { text: '32', value: 32 },
   { text: '64 (max)', value: 64 },
@@ -192,6 +193,10 @@ const BG_SOURCE_PANE_OPTIONS: { text: string; value: Params['bgSource'] }[] = [
 
 type Preset = {
   label: string;
+  /** Mutates `p` in place — Tweakpane bindings hold references from `initUi`,
+   *  so replacing the object would leave sliders writing to a stale copy.
+   *  The pill count is derived from `p.shape` post-apply via `pillCountForShape`,
+   *  so a preset can't ship an inconsistent shape/count pair. */
   apply: (p: Params) => void;
 };
 
@@ -229,65 +234,122 @@ const PRESETS: readonly Preset[] = [
   {
     label: 'Subtle pill',
     apply: (p) => {
-      p.shape       = 'pill';
-      p.sampleCount = 8;
-      p.n_d   = 1.5168;
-      p.V_d   = 40;
-      p.refractionStrength = 0.1;
+      p.shape              = 'pill';
+      p.sampleCount        = 8;
+      p.n_d                = 1.517;
+      p.V_d                = 6.5;
+      p.refractionStrength = 0.035;
+      p.temporalJitter     = true;
+      p.smoothCurvature    = true;
+      p.projection         = 'perspective';
+      p.fov                = 45;
+      p.paused             = false;
+      p.aaMode             = 'none';
+      p.historyAlpha       = 0.5;
+      p.debugProxy         = false;
+      p.envmapEnabled      = false;
       // Mutate in place — Tweakpane bindings hold references from initUi; replacing
       // the object would leave sliders writing stale copies that the render loop
       // never reads.
-      Object.assign(p.shapes.pill, { pillLen: 320, pillShort: 88, pillThick: 40, edgeR: 14 });
-      p.refractionMode = 'exact';
-    },
-  },
-  {
-    label: 'Strong dispersion',
-    apply: (p) => {
-      p.shape       = 'pill';
-      p.sampleCount = 16;
-      p.n_d   = 1.6;
-      p.V_d   = 18;
-      p.refractionStrength = 0.35;
-      Object.assign(p.shapes.pill, { pillLen: 320, pillShort: 88, pillThick: 40, edgeR: 14 });
+      Object.assign(p.shapes.pill, { pillLen: 400, pillShort: 115, pillThick: 62, edgeR: 100 });
       p.refractionMode = 'exact';
     },
   },
   {
     label: 'Prism rainbow',
     apply: (p) => {
-      p.shape        = 'prism';
-      p.sampleCount  = 16;
-      p.n_d   = 1.6;
-      p.V_d   = 12;
-      p.refractionStrength = 0.18;
-      Object.assign(p.shapes.prism, { pillLen: 400, pillShort: 80, pillThick: 80 });
+      p.shape              = 'prism';
+      p.sampleCount        = 16;
+      p.n_d                = 1.6;
+      p.V_d                = 12;
+      p.refractionStrength = 0.155;
+      p.temporalJitter     = true;
+      p.smoothCurvature    = true;
+      p.projection         = 'perspective';
+      p.fov                = 45;
+      p.paused             = false;
+      p.aaMode             = 'none';
+      p.historyAlpha       = 0.5;
+      p.debugProxy         = false;
+      p.envmapEnabled      = false;
+      Object.assign(p.shapes.prism, { pillLen: 393, pillShort: 149, pillThick: 117 });
       p.refractionMode = 'exact';
     },
   },
   {
     label: 'Rotating cube',
     apply: (p) => {
-      p.shape       = 'cube';
-      p.sampleCount = 16;
-      p.n_d   = 1.55;
-      p.V_d   = 18;
-      p.refractionStrength = 0.2;
-      Object.assign(p.shapes.cube, { pillLen: 160, pillShort: 160, pillThick: 160, edgeR: 10 });
+      p.shape              = 'cube';
+      p.sampleCount        = 16;
+      p.n_d                = 1.272;
+      p.V_d                = 2.0;
+      p.refractionStrength = 0.15;
+      p.temporalJitter     = true;
+      p.smoothCurvature    = true;
+      p.projection         = 'perspective';
+      p.fov                = 45;
+      p.paused             = false;
+      p.aaMode             = 'none';
+      p.historyAlpha       = 0.5;
+      p.debugProxy         = false;
+      p.envmapEnabled      = false;
+      Object.assign(p.shapes.cube, { pillLen: 230, pillShort: 230, pillThick: 230, edgeR: 44 });
       p.refractionMode = 'exact';
     },
   },
   {
     label: 'Wavy plate',
     apply: (p) => {
-      p.shape        = 'plate';
-      p.sampleCount  = 16;
-      p.n_d   = 1.272;
-      p.V_d   = 2.0;
+      p.shape              = 'plate';
+      p.sampleCount        = 16;
+      p.n_d                = 1.272;
+      p.V_d                = 2.0;
       p.refractionStrength = 0.2;
+      p.temporalJitter     = true;
+      p.smoothCurvature    = true;
+      p.projection         = 'perspective';
+      p.fov                = 45;
+      p.paused             = false;
+      p.aaMode             = 'none';
+      p.historyAlpha       = 0.5;
+      p.debugProxy         = false;
+      p.envmapEnabled      = false;
       Object.assign(p.shapes.plate, {
-        pillLen: 400, pillThick: 100, edgeR: 4, pillShort: 400,
-        waveAmp: 20, waveWavelength: 300,
+        pillLen: 346, pillShort: 346, pillThick: 60, edgeR: 10.5,
+        waveAmp: 17, waveWavelength: 535,
+      });
+      p.refractionMode = 'exact';
+    },
+  },
+  {
+    label: 'Diamond',
+    apply: (p) => {
+      p.shape              = 'diamond';
+      p.sampleCount        = 16;
+      p.n_d                = 2.418;
+      p.V_d                = 55.0;
+      p.refractionStrength = 0.2;
+      p.temporalJitter     = true;
+      p.smoothCurvature    = true;
+      p.projection         = 'perspective';
+      p.fov                = 45;
+      p.paused             = false;
+      p.aaMode             = 'none';
+      p.historyAlpha       = 0.5;
+      p.debugProxy         = false;
+      p.envmapEnabled      = true;
+      p.envmapSlug         = 'brown_photostudio_06';
+      p.envmapSize         = '2k';
+      p.envmapExposure     = 0.75;
+      p.envmapRotation     = -1.0995;
+      p.bgSource           = 'html';
+      Object.assign(p.shapes.diamond, {
+        diamondSize: 400,
+        diamondWireframe: false,
+        diamondFacetColor: false,
+        diamondTirDebug: false,
+        diamondTirMaxBounces: 6,
+        diamondView: 'free',
       });
       p.refractionMode = 'exact';
     },
@@ -314,8 +376,10 @@ export function initUi(
    *  boot (so we didn't download anything), avoiding the fallback
    *  gradient rendering after the user opted back in. */
   onEnvmapEnabled:  () => void = () => {},
-  /** When set, shows Background controls for HTML-in-Canvas. */
-  htmlBackground:   { supported: true; focusEditor: () => void } | null = null,
+  /** Truthy when the runtime supports HTML-in-Canvas; gates the Background
+   *  dropdown and the bgSource clamp inside preset clicks. */
+  htmlBackground:   { supported: true } | null = null,
+  syncPillCount: (count: number) => void = () => {},
 ): Pane {
   const pane = new Pane({ title: 'Spectral Dispersion', expanded: true });
 
@@ -414,7 +478,11 @@ export function initUi(
     }
   }
   syncShapeSliders();
-  shapeBinding.on('change', () => { syncShapeSliders(); pane.refresh(); });
+  shapeBinding.on('change', () => {
+    syncShapeSliders();
+    syncPillCount(pillCountForShape(params.shape));
+    pane.refresh();
+  });
 
   // HDR environment map controls (Phase C). Placed in its own folder so
   // the reflection-source swap + HDRI picker aren't buried in the
@@ -458,7 +526,6 @@ export function initUi(
   randomPhotoBtn.on('click', reloadPhoto);
 
   let bgSourceBinding: ReturnType<typeof env.addBinding> | null = null;
-  let editHtmlBgBtn: ReturnType<typeof env.addButton> | null = null;
   if (htmlBackground) {
     bgSourceBinding = env.addBinding(params, 'bgSource', {
       label: 'Background',
@@ -469,11 +536,6 @@ export function initUi(
       pane.refresh();
       onChange();
       markSceneChanged();
-    });
-    editHtmlBgBtn = env.addButton({ title: 'Edit text…' });
-    editHtmlBgBtn.on('click', () => {
-      if (params.bgSource !== 'html') return;
-      htmlBackground.focusEditor();
     });
   }
 
@@ -490,9 +552,6 @@ export function initUi(
     randomPhotoBtn.hidden = on && !htmlOn;
     if (bgSourceBinding) {
       bgSourceBinding.hidden = false;
-    }
-    if (editHtmlBgBtn) {
-      editHtmlBgBtn.hidden = !htmlOn;
     }
   }
   syncEnvHdrControls();
@@ -518,9 +577,22 @@ export function initUi(
     const btn = presets.addButton({ title: preset.label });
     btn.on('click', () => {
       preset.apply(params);
+      // Presets are written context-free (Diamond unconditionally requests
+      // `bgSource: 'html'`); clamp here so a runtime click in a browser
+      // without HTML-in-Canvas support can't persist an unreachable state.
+      // Mirrors the boot-time guard in main.ts.
+      if (!htmlBackground && params.bgSource === 'html') {
+        params.bgSource = 'photo';
+      }
+      // Derive the pill count from the post-apply shape via the shared
+      // helper — that's the same source the shape-dropdown handler uses,
+      // so a preset can't ship a shape/count mismatch.
+      syncPillCount(pillCountForShape(params.shape));
       // Presets can switch shape AND change pill dims, so re-evaluate which
       // sliders are visible and reseed cubeSize before the refresh paints.
       syncShapeSliders();
+      syncEnvHdrControls();
+      if (params.envmapEnabled) reloadEnvmap(params.envmapSlug);
       pane.refresh();
       markSceneChanged();
       onChange();
@@ -654,28 +726,26 @@ export function initUi(
 }
 
 export function defaultParams(): Params {
-  // Opening scene: four Rainbow-soap cubes in perspective. Extreme dispersion
-  // (V_d = 2) over a random Picsum photo gives a dramatic per-wavelength
-  // rainbow on every rotating face — the kind of first impression the spectral
-  // pipeline exists to produce. Users can switch materials or shape from the
-  // Tweakpane Presets / Materials folders.
+  // Opening scene: Rainbow-soap cubes over the HTML/photo composite when the
+  // browser exposes CanvasDrawElement, with Picsum-only as the automatic
+  // fallback in main.ts.
   return {
     sampleCount: 16,
     shape: 'cube',
     n_d: 1.272,
     V_d: 2.0,
-    refractionStrength: 0.2,
+    refractionStrength: 0.15,
     shapes:      defaultShapesParams(),
     refractionMode: 'exact',
     temporalJitter: true,
     projection: 'perspective',
-    fov: 60,
+    fov: 45,
     debugProxy: false,
     smoothCurvature: true,
-    aaMode: 'taa',
+    aaMode: 'none',
     paused: false,
-    historyAlpha: 0.2,
-    envmapEnabled: true,
+    historyAlpha: 0.5,
+    envmapEnabled: false,
     // Exposure = 0.25 keeps typical HDRI peaks (studio strip-lights at
     // 50-200, sunny sky at 5-20) inside the [0, 2] display range without
     // flattening the mid-tones. Users with brighter/dimmer HDRIs tune

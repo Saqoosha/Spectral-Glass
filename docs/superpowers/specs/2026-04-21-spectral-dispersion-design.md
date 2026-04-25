@@ -1,7 +1,11 @@
 # Real Spectral Dispersion — Liquid Glass Background (Design Spec)
 
 **Date:** 2026-04-21
-**Status:** Draft — awaiting review
+**Status:** Historical seed spec. The current implementation has evolved into
+the `Spectral-Glass` app: proxy-mesh two-pass WebGPU, five shape families
+(pill/prism/cube/wavy plate/diamond), HDR environments, HTML-in-canvas
+background text, FXAA/TAA, persistence, and unit tests. See
+`README.md` and `docs/ARCHITECTURE.md` for the live behavior.
 **Author:** Saqoosha + Claude (Opus 4.7)
 
 ## Purpose
@@ -9,6 +13,12 @@
 Build a realtime WebGPU demo that renders Apple "Liquid Glass"-style floating pill shapes with **physically accurate wavelength-dependent refraction** (spectral dispersion) over a photographic background. The demo is the proof-of-technique for a later website background; this spec covers the technique in isolation.
 
 The deliverable must make one thing obvious on screen: the difference between the common fake "shift R/G/B IORs" hack and a real spectral integration. That A/B difference is the whole point.
+
+**Current default snapshot (2026-04-25):** four rotating cubes over
+Picsum+HTML when Chrome exposes `CanvasDrawElement`, otherwise
+Picsum-only. Defaults are `N=16`, `n_d=1.272`, `V_d=2.0`, refraction strength
+`0.15`, perspective FOV 45°, Exact mode, temporal jitter on, AA `None`.
+Diamond is a single-instance preset (`diamondSize=400`, Brown Studio 2 2K HDRI).
 
 ## Non-Goals
 
