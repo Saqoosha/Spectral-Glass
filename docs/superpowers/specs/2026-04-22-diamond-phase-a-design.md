@@ -92,7 +92,7 @@ Same pattern as `cube.ts` and `plate.ts`:
 
 ### 5. Proxy bounds
 
-AABB: `halfSize = (d/2, d/2, d · DIAMOND_HEIGHT_RATIO / 2)`. Rotated by `diamondRot` in `vs_proxy` so the rasterized silhouette stays tight under rotation (same trick cube and plate use).
+AABB: `halfSize = (d/2, d/2, d · DIAMOND_HEIGHT_RATIO / 2)`. Rotated by `diamondRot` in `vs_proxy` so the rasterised silhouette stays tight under rotation (same trick cube and plate use).
 
 ### 6. No `edgeR` rounding
 

@@ -1,3 +1,5 @@
+import type { ParamsShape } from './shapeParams';
+
 /** Must match `MAX_PILLS` in `webgpu/uniforms.ts` (UBO array size). */
 const PILL_COUNT_CAP = 8;
 
@@ -10,13 +12,36 @@ export type Pill = {
 /** Default multi-instance count — non-diamond scene presets and the opening layout assume four. */
 export const DEFAULT_PILL_COUNT = 4;
 
+/** Diamond preset and shape-switch enforce a single instance — the production
+ *  app shows one stone, not a row. Centralised so ui.ts and main.ts agree. */
+export const DIAMOND_PILL_COUNT = 1;
+
+/** Single source of truth for "how many objects does this shape want on screen?".
+ *  Both the shape-dropdown handler in ui.ts and the boot-time reconciliation
+ *  in main.ts read from this so they can't drift. */
+export function pillCountForShape(shape: ParamsShape): number {
+  return shape === 'diamond' ? DIAMOND_PILL_COUNT : DEFAULT_PILL_COUNT;
+}
+
+/** Pad `pills` (in place on the returned copy) to exactly `target` entries by
+ *  pulling from `defaults` and cycling through them when `target > defaults.length`,
+ *  shallow-cloning each pulled entry so the template stays immutable. Caller
+ *  guarantees `target <= PILL_COUNT_CAP`. */
+function padFromDefaults(copy: Pill[], target: number, defaults: readonly Pill[]): void {
+  if (defaults.length === 0) return;
+  while (copy.length < target) {
+    copy.push({ ...defaults[copy.length % defaults.length]! });
+  }
+}
+
 /**
  * Pad `pills` with `defaultPills` layout slots until it has at least
  * `minCount` entries, capping the total at `PILL_COUNT_CAP` (the renderer's
  * `MAX_PILLS` UBO array size). The default `minCount` matches the four-
  * instance opening layout; callers pass a smaller value (e.g. 1 for the
  * diamond preset) when the scene wants fewer instances. Pulled-from-defaults
- * entries are shallow-cloned so the layout template stays immutable.
+ * entries are shallow-cloned so the layout template stays immutable; if
+ * `minCount > defaults.length` the layout cycles.
  */
 export function ensurePillInstanceCount(
   pills: readonly Pill[],
@@ -27,13 +52,11 @@ export function ensurePillInstanceCount(
   const copy = pills.length > PILL_COUNT_CAP
     ? pills.slice(0, PILL_COUNT_CAP).map((p) => ({ ...p }))
     : pills.map((p) => ({ ...p }));
-  if (copy.length >= minCount) {
+  const target = Math.min(minCount, PILL_COUNT_CAP);
+  if (copy.length >= target) {
     return copy;
   }
-  const defaults = defaultPills(width, height);
-  for (let i = copy.length; i < minCount && i < defaults.length; i++) {
-    copy.push({ ...defaults[i]! });
-  }
+  padFromDefaults(copy, target, defaultPills(width, height));
   return copy;
 }
 
@@ -41,9 +64,10 @@ export function ensurePillInstanceCount(
  * Trim or pad `pills` to exactly `count` instances (clamped to
  * `[1, PILL_COUNT_CAP]`; non-finite / fractional inputs floor to 1).
  * Trimming preserves the leading entries' positions; padding pulls from
- * `defaultPills(width, height)` and shallow-clones so the template stays
- * immutable. Used by shape/preset switches in main.ts where the scene wants
- * an exact instance count, not a floor.
+ * `defaultPills(width, height)` (cycling when `count` exceeds the template
+ * length) and shallow-clones so the template stays immutable. Used by
+ * shape/preset switches in main.ts where the scene wants an exact instance
+ * count, not a floor.
  */
 export function setPillInstanceCount(
   pills: readonly Pill[],
@@ -57,10 +81,7 @@ export function setPillInstanceCount(
   if (copy.length >= target) {
     return copy;
   }
-  const defaults = defaultPills(width, height);
-  for (let i = copy.length; i < target && i < defaults.length; i++) {
-    copy.push({ ...defaults[i]! });
-  }
+  padFromDefaults(copy, target, defaultPills(width, height));
   return copy;
 }
 

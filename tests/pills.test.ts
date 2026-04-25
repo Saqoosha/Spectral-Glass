@@ -58,7 +58,8 @@ describe('setPillInstanceCount', () => {
     expect(setPillInstanceCount(d, 800, 600, 0)).toHaveLength(1);
     expect(setPillInstanceCount(d, 800, 600, -3)).toHaveLength(1);
     expect(setPillInstanceCount(d, 800, 600, 4.7)).toHaveLength(4);
-    expect(setPillInstanceCount(d, 800, 600, 99)).toHaveLength(d.length);
+    // 99 clamps to MAX_PILLS=8; defaults.length=4 so the pad cycles.
+    expect(setPillInstanceCount(d, 800, 600, 99)).toHaveLength(8);
     expect(setPillInstanceCount(d, 800, 600, Number.NaN)).toHaveLength(1);
   });
 });
@@ -69,6 +70,22 @@ describe('ensurePillInstanceCount overflow', () => {
     const oversized = Array.from({ length: 20 }, () => ({ ...seed }));
     const out = ensurePillInstanceCount(oversized, 800, 600);
     expect(out).toHaveLength(8);
+  });
+
+  it('cycles through the layout template when minCount exceeds defaults.length', () => {
+    const seed = [{ cx: 7, cy: 8, cz: 0, hx: 1, hy: 1, hz: 1, edgeR: 0 }];
+    const out = ensurePillInstanceCount(seed, 800, 600, 7);
+    expect(out).toHaveLength(7);
+    expect(out[0]?.cx).toBe(seed[0]!.cx);
+    const baseline = defaultPills(800, 600);
+    // Padded entries (1..6) wrap through the 4-slot template (idx 1,2,3,0,1,2).
+    const expectIdx = (entry: number, defaultsIdx: number) => {
+      expect(out[entry]?.cx).toBe(baseline[defaultsIdx]!.cx);
+      expect(out[entry]?.cy).toBe(baseline[defaultsIdx]!.cy);
+    };
+    expectIdx(1, 1);
+    expectIdx(4, 0);
+    expectIdx(6, 2);
   });
 });
 

@@ -18,7 +18,7 @@ import {
   defaultPills,
   ensurePillInstanceCount,
   setPillInstanceCount,
-  DEFAULT_PILL_COUNT,
+  pillCountForShape,
   type Pill,
 } from './pills';
 import { defaultParams, initUi, mergeParams, type Params } from './ui';
@@ -135,19 +135,18 @@ async function main(): Promise<void> {
     ? stored.pills.map((p) => ({ ...p }))
     : defaultPills(initSize.width, initSize.height);
   const pillCountBeforeEnsure = pills.length;
-  const targetPillCountForShape = (shape: Params['shape']): number =>
-    shape === 'diamond' ? 1 : DEFAULT_PILL_COUNT;
   // Two-step boot reconciliation: `ensurePillInstanceCount` enforces the
   // FLOOR (so we never start with a lone pill from old localStorage), then
   // `setPillInstanceCount` enforces the EXACT shape-driven count (1 for
-  // diamond, 4 for the rest). Composing the two keeps the persistence
-  // path's "don't lose user state" semantics while still letting the
-  // diamond preset open with a single instance.
+  // diamond, 4 for the rest, via the shared `pillCountForShape`). Composing
+  // the two keeps the persistence path's "don't lose user state" semantics
+  // while still letting the diamond preset open with a single instance.
+  const bootPillCount = pillCountForShape(params.shape);
   pills = setPillInstanceCount(
-    ensurePillInstanceCount(pills, initSize.width, initSize.height, targetPillCountForShape(params.shape)),
+    ensurePillInstanceCount(pills, initSize.width, initSize.height, bootPillCount),
     initSize.width,
     initSize.height,
-    targetPillCountForShape(params.shape),
+    bootPillCount,
   );
 
   // Scene-change flag — consumed next frame by the render loop to force a
@@ -442,7 +441,7 @@ async function main(): Promise<void> {
       // Shuffle just the visible count — diamond stays single-instance even
       // after Space, otherwise the preset's 1-instance rule would drift on
       // the first random shuffle.
-      pills = defaultPills(cur.width, cur.height).slice(0, targetPillCountForShape(params.shape)).map((p) => ({
+      pills = defaultPills(cur.width, cur.height).slice(0, pillCountForShape(params.shape)).map((p) => ({
         ...p,
         cx: Math.random() * cur.width,
         cy: Math.random() * cur.height,

@@ -3,13 +3,8 @@ import type { PerfStats } from './perfStats';
 import { DIAMOND_SIZE_MIN, DIAMOND_SIZE_MAX, type DiamondView } from './math/diamond';
 import { ENVMAPS, DEFAULT_ENVMAP_SLUG, DEFAULT_ENVMAP_SIZE, ENVMAP_SIZES, type EnvmapSize } from './envmapList';
 import { defaultShapesParams, mergePrismDims, type ShapesParams } from './shapeParams';
-import { DEFAULT_PILL_COUNT } from './pills';
+import { pillCountForShape } from './pills';
 export type { ShapesParams, CommonBodyParams, PlateShapeParams, DiamondShapeParams, PrismBodyParams } from './shapeParams';
-
-/** Diamond preset and shape-switch enforce a single instance — see
- *  `setScenePillCount` in main.ts. Hoisted so `pillCountForShape` and the
- *  Preset table read from one place instead of repeating the literal. */
-export const DIAMOND_PILL_COUNT = 1;
 
 /** Bounds for the envmap exposure slider. Exposed so `persistence.ts`
  *  clamps hand-edited / stale localStorage to the exact same range —
@@ -198,8 +193,11 @@ const BG_SOURCE_PANE_OPTIONS: { text: string; value: Params['bgSource'] }[] = [
 
 type Preset = {
   label: string;
+  /** Mutates `p` in place — Tweakpane bindings hold references from `initUi`,
+   *  so replacing the object would leave sliders writing to a stale copy.
+   *  The pill count is derived from `p.shape` post-apply via `pillCountForShape`,
+   *  so a preset can't ship an inconsistent shape/count pair. */
   apply: (p: Params) => void;
-  pillCount: number;
 };
 
 type Material = {
@@ -235,7 +233,6 @@ const MATERIALS: readonly Material[] = [
 const PRESETS: readonly Preset[] = [
   {
     label: 'Subtle pill',
-    pillCount: DEFAULT_PILL_COUNT,
     apply: (p) => {
       p.shape              = 'pill';
       p.sampleCount        = 8;
@@ -260,7 +257,6 @@ const PRESETS: readonly Preset[] = [
   },
   {
     label: 'Prism rainbow',
-    pillCount: DEFAULT_PILL_COUNT,
     apply: (p) => {
       p.shape              = 'prism';
       p.sampleCount        = 16;
@@ -282,7 +278,6 @@ const PRESETS: readonly Preset[] = [
   },
   {
     label: 'Rotating cube',
-    pillCount: DEFAULT_PILL_COUNT,
     apply: (p) => {
       p.shape              = 'cube';
       p.sampleCount        = 16;
@@ -304,7 +299,6 @@ const PRESETS: readonly Preset[] = [
   },
   {
     label: 'Wavy plate',
-    pillCount: DEFAULT_PILL_COUNT,
     apply: (p) => {
       p.shape              = 'plate';
       p.sampleCount        = 16;
@@ -329,7 +323,6 @@ const PRESETS: readonly Preset[] = [
   },
   {
     label: 'Diamond',
-    pillCount: DIAMOND_PILL_COUNT,
     apply: (p) => {
       p.shape              = 'diamond';
       p.sampleCount        = 16;
@@ -485,9 +478,6 @@ export function initUi(
     }
   }
   syncShapeSliders();
-  // Mirrors `targetPillCountForShape` in main.ts — keep them in sync.
-  const pillCountForShape = (shapeName: Params['shape']): number =>
-    shapeName === 'diamond' ? DIAMOND_PILL_COUNT : DEFAULT_PILL_COUNT;
   shapeBinding.on('change', () => {
     syncShapeSliders();
     syncPillCount(pillCountForShape(params.shape));
@@ -594,7 +584,10 @@ export function initUi(
       if (!htmlBackground && params.bgSource === 'html') {
         params.bgSource = 'photo';
       }
-      syncPillCount(preset.pillCount);
+      // Derive the pill count from the post-apply shape via the shared
+      // helper — that's the same source the shape-dropdown handler uses,
+      // so a preset can't ship a shape/count mismatch.
+      syncPillCount(pillCountForShape(params.shape));
       // Presets can switch shape AND change pill dims, so re-evaluate which
       // sliders are visible and reseed cubeSize before the refresh paints.
       syncShapeSliders();

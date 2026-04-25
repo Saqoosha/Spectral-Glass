@@ -172,7 +172,7 @@ in the UI to tint every proxy fragment pink and see the rasterised silhouette.
   photo bg + UV-offset refraction path; exposure + yaw sliders let
   users tune without re-downloading.
 - **HTML-in-canvas background.** Chrome builds exposing
-  `GPUQueue.copyElementImageToTexture` can rasterize the scrollable DOM
+  `GPUQueue.copyElementImageToTexture` can rasterise the scrollable DOM
   text panel into the same texture the glass refracts. If the API is missing
   or repeated copies fail, the app falls back to **Picsum only** while staying
   scrollable and interactive.
